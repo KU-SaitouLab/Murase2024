@@ -1,0 +1,147 @@
+# Haplotye phasing workflow v1.0
+## Step1, 1-4 : Mapping and reconstruct genome reference fasta with target SNP.
+## Step2, 1-9 : Mapping and haplotype phasing.
+## Step3, 1-2 : Haplotype phasing other NGS data using SNP.
+Requirement : 
+* megalodon v2.5.0 https://github.com/nanoporetech/megalodon.git
+* Clair3 v0.1.12 https://github.com/HKU-BAL/Clair3.git
+* whatshap v1.4 https://github.com/whatshap/whatshap.git
+* bgzip2 v1.0.8 http://www.bzip.org/
+* tabix v0.2.6 https://github.com/samtools/htslib.git
+* bcftools v1.15.1 https://github.com/samtools/bcftools.git
+* samtools v1.9 https://github.com/samtools/bcftools.git
+* modbam2bed v0.5.3 https://github.com/epi2me-labs/modbam2bed.git
+* SNPsplit v0.3.2 https://github.com/FelixKrueger/SNPsplit.git
+
+ Steps 1-1,2,3,4 are to identify SNPs that are not in reference genome (GT:1/1 or 1/2) and replace those positions of reference genome with ALT(1) nucleotides.
+ These steps are to identify SNPs that always shows GT:0/1.
+## Step 1-1. Basecalling and mapping ONT data with megalodon
+* megalodon v2.5.0
+myref=genome.mmi
+fast5_pass=fast5
+guppy_config=dna_r9.4.1_450bps_sup_prom.cfg
+megalodon ${fast5_pass} \
+  --guppy-${guppy_config} \
+  --remora-modified-bases dna_r9.4.1_e8 sup 0.0.0 5mc CG 0 \
+  --outputs basecalls mappings mod_mappings mods \
+  --reference ${myref}
+
+## Step 1-2. Clair3 SNP identification.
+* Clair3 v0.1.12
+* Whatshap v1.4
+bam=mapping.bam
+myref=genome.fa
+MODEL_NAME="r941_prom_sup_g5014"
+THREADS=24
+run_clair3.sh \
+  --bam_fn=${bam} \
+  --ref_fn=${myref} \
+  --threads=${THREADS} \
+  --platform="ont" \
+  --model_path="path_to_model_dir/${MODEL_NAME}"
+
+## Step 1-3. Identifying SNPs with 1/1 or 1/2 mark.
+* bgzip, tabix
+gzip -dc ./merge_output.vcf.gz | perl -F'\t' -anle 'if ($=~/^#/) {print $;} elsif ($F[6] eq "PASS" and length($F[3])==1) {if ($F[9] =~/1/1/ and length($F[4])==1) {print $_;} elsif ($F[9]=~/1/2/) {@a=split/,/,$F[4];if (length($a[0])==1 and length($a[1])==1) {$F[9]=~s@1/2@0/1@;print join("\t",@F[0..3],$a[0],@F[5..9]);}}}' > ref_SNP.vcf
+bgzip ref_SNP.vcf
+tabix -p vcf ref_SNP.vcf.gz
+
+## Step 1-4. Reconstrucion of genome fasta with SNPs in above.
+* bcftools v1.15.1
+myref=genome.fa
+out=genome_ref.fa
+vcf=ref_SNP.vcf.gz
+bcftools consensus -f ${myref} ${vcf}  > ${out}
+
+## Step 2-1. Re-mapping ONT data with new fasta with megalodon
+* megalodon v2.5.0
+myref=genome_ref.mmi
+fast5_pass=fast5
+guppy_config=dna_r9.4.1_450bps_sup_prom.cfg
+megalodon ${fast5_pass} \
+  --guppy-${guppy_config} \
+  --remora-modified-bases dna_r9.4.1_e8 sup 0.0.0 5mc CG 0 \
+  --outputs basecalls mappings mod_mappings mods \
+  --reference ${myref}
+
+## Step 2-2. Clair3 phasing, 2nd time.
+* Clair3 v0.1.12
+* whatshap v1.4
+bam=mapping.bam
+ref=genome_ref.fa
+MODEL_NAME="r941_prom_sup_g5014"
+THREADS=24
+run_clair3.sh \
+  --bam_fn=${bam} \
+  --ref_fn=${myref} \
+  --threads=${THREADS} \
+  --platform="ont" \
+  --model_path="path_to_model_dir/${MODEL_NAME}"
+
+## Step 2-3. Collect phased SNP data. Chromosome number needs to be adjusted.
+* bgzip, tabix
+cd tmp/phase_output/phase_vcf
+gzip -dc phased_chr{{1..22},X}.vcf.gz  > ref_phased.vcf
+bgzip ref_phased.vcf
+tabix -p vcf ref_phased.vcf.gz
+
+## Step 2-4. Sort BAM file
+* samtools 1.9
+samtools sort -o mappings_sort.bam mappings.bam
+samtools index mappings_sort.bam
+
+## Step 2-5. Haplotype phasing ONT reads
+* whstshap v1.14
+in=mappings_sort.bam
+out=mappings_haplotag.bam
+vcf=ref_phased.vcf.gz
+myref=genome_ref.fa
+haplist=ref_phased_haplotypes.tsv
+cpu=24
+whatshap haplotag \
+  -o ${out} \
+  --reference ${myref} \
+  --output-threads=${cpu} \
+  --output-haplotag-list=${haplist} \
+  --ignore-read-groups \
+  ${vcf} ${in}
+
+## Step 2-6. Split ONT-BAM into two alleles.
+* whstshap v1.14
+haplist=ref_phased_haplotypes.tsv
+whatshap split  \
+  --output-h1 mappings_H1.bam  \
+  --output-h2 mappings_H2.bam  \
+  mappings.bam ${haplist}
+whatshap split  \
+  --output-h1 mod_mappings_H1.bam  \
+  --output-h2 mod_mappings_H2.bam  \
+  mod_mappings.bam ${haplist}
+
+## Step 2-7. Sort BAM files.
+* samtools 1.9
+samtools sort   mod_mappings_H1.bam -o mod_mappings_H1_sort.bam ; samtools index  mod_mappings_H1_sort.bam
+samtools sort   mod_mappings_H2.bam -o mod_mappings_H2_sort.bam ; samtools index  mod_mappings_H2_sort.bam
+
+## Step 2-8. ONT bam to 5mC level.
+* modbam2bed v0.5.3
+myref=genome_ref.fa
+bam1=mod_mappings_H1_sort.bam
+bam2=mod_mappings_H2_sort.bam
+cpu=24
+modbam2bed -e -m 5mC --cpg -t ${cpu} ${myref} ${bam1} > ${bam1%.bam}.bed
+modbam2bed -e -m 5mC --cpg -t ${cpu} ${myref} ${bam2} > ${bam2%.bam}.bed
+
+## Step 2-9. Create 10kb-bin bedgraph file
+chrom_size=genome.chrom.size   # chrom.size file, list of chr and N bases, delimitted by TAB.
+cat ${chrom_size} ${bam1%.bam}.bed | perl -F'\t' -anle 'BEGIN {$bin=10000;$mod="m";print "track type=bedGraph";@clist=(1..22,"X");$colm=12;$colu=11;$_="chr$_" for @clist;} if (@F < 3) {$size{$F[0]}=$F[1];} else {if ($F[3] eq $mod) {$l=int(($F[1]-1)/$bin);$mC{"$F[0]:$l"}+=$F[$colm];$uC{"$F[0]:$l"}+=$F[$colu]          ;}} END {for $c (@clist) {for $i (0..int($size{$c}/$bin)) {$l2=($i + 1)*$bin; $l2=$size{$c} if $l2 > $size{$c};print join("\t",$c,$i*$bin,$l2,                             ($mC{"$c:$i"}+$uC{"$c:$i"}) > 0 ? $mC{"$c:$i"} / ($mC{"$c:$i"}+$uC{"$c:$i"}) * 100 : 0) if ($mC{"$c:$i"}+$uC{"$c:$i"})>20; }}}' > ${f%.bam}_10kb_5mC.bedgraph
+cat ${chrom_size} ${bam2%.bam}.bed | perl -F'\t' -anle 'BEGIN {$bin=10000;$mod="m";print "track type=bedGraph";@clist=(1..22,"X");$colm=12;$colu=11;$_="chr$_" for @clist;} if (@F < 3) {$size{$F[0]}=$F[1];} else {if ($F[3] eq $mod) {$l=int(($F[1]-1)/$bin);$mC{"$F[0]:$l"}+=$F[$colm];$uC{"$F[0]:$l"}+=$F[$colu]          ;}} END {for $c (@clist) {for $i (0..int($size{$c}/$bin)) {$l2=($i + 1)*$bin; $l2=$size{$c} if $l2 > $size{$c};print join("\t",$c,$i*$bin,$l2,                             ($mC{"$c:$i"}+$uC{"$c:$i"}) > 0 ? $mC{"$c:$i"} / ($mC{"$c:$i"}+$uC{"$c:$i"}) * 100 : 0) if ($mC{"$c:$i"}+$uC{"$c:$i"})>20; }}}' > ${f%.bam}_10kb_5mC.bedgraph
+
+## Step 3-1. Swap REF and ALT bases based at GT tag labelled with "1|0", output SNP list for SNPsplit tool.
+gzip -dc ref_phased.vcf.gz | perl -F'\t' -anle '@t=split(/:/,$F[9]);@F[3,4] = @F[4,3] if $t[0] eq "1|0";print join("\t","$F[0]_" . $i++,@F[0,1],1,"$F[3]/$F[4]","$F[0]:$t[4]") if $t[4] =~/^\d+$/;' > ref_phased_snpsplit.txt
+
+## Step 3-2. Split BAM for Methylome and RNAseq into two alleles.
+* SNPsplit v0.3.2
+SNPsplit --snp_file ref_phased_snpsplit.txt          --bisulfite methylome.bam
+SNPsplit --snp_file ref_phased_snpsplit.txt                      rnaseq.bam
+
