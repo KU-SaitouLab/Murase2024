@@ -1,4 +1,4 @@
-# Murase2024
+# Codes used in Murase. et.al. XXXX, XXXX, XXXX.
 ## 1. Haplotye phasing workflow v1.0
 ### Murase2024/hap_phasing/
 Shell scripts
