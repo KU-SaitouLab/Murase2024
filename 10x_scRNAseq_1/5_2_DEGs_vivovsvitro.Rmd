@@ -1,0 +1,198 @@
+---
+title: '5_2_DEGs_vivovsvitro'
+author: "Ryuta Yokogawa"
+output:
+  html_document:
+    number_sections: yes
+    toc: true
+    toc_float: true
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "~/Library/CloudStorage/OneDrive-KyotoUniversity/10xanalysis/RMD for analysis/Murase_paper/Final")
+```
+
+data: 
+
+Hs_in-vivo (AC7w, AC9w, AC10w, YK11w, AC13w, AC16w)
+Hs_in-vitro (c11, c56, c86, c117)
+
+
+# Set up
+```{r}
+filename<-"5_DEGs_vivovsvitro"
+orig.ident<-c("AC7w","AC9w","AC10w","YK11w","AC13w","AC16w","c11","c56","c86","c117")
+dataset<-c(rep("Hs_in-vivo",6), rep("Hs_in-vitro",4))
+mapping<-"cr60GRCh38p12chrxmv1b1"
+```
+
+```{r}
+if(!dir.exists(filename)){
+    dir.create(filename)
+}
+```
+
+## Load libraries
+```{r}
+suppressPackageStartupMessages({
+  library(SeuratWrappers)
+  library(patchwork)
+  library(Seurat)
+  library(Matrix)
+  library(data.table)
+  library(gridExtra)
+  library(metaMA)
+  library(knitr)
+  library(ggrepel)
+  library(tidyverse)
+})
+set.seed(0)
+```
+
+## Import data
+```{r}
+seurat<-readRDS("~/Library/CloudStorage/OneDrive-KyotoUniversity/10xanalysis/RMD for analysis/Murase_paper/Final/2_annotation_vivoACYK_c11_56_86_117_res0.8_5000HVGs_exp2in5cells.rds")
+seurat$tmp.cluster<-seurat$cluster %>% as.character()
+seurat$tmp.cluster<-gsub("[0-9]","",seurat$tmp.cluster)
+seurat$tmp.orig.ident<-ifelse(seurat$orig.ident%in%c("c11","c56","c86","c117"),"vitro","vivo")
+seurat$tmp.cluster<-paste0(seurat$tmp.cluster,"_",seurat$tmp.orig.ident) %>% 
+  factor(levels=paste0(rep(c("VEM","EM","M","PLL","ZPD"),each=2),"_",c("vivo","vitro")))
+ table(seurat$tmp.cluster) %>% addmargins()
+
+celltype_pal<-rep(c("#1F77B4","#FF7F0E"),6) %>% 
+  setNames(c("VEM_vivo", "VEM_vitro", "EM_vivo", "EM_vitro", "M_vivo", "M_vitro", "PLL_vivo", "PLL_vitro", "ZPD_vivo", "ZPD_vitro"))
+
+cluster_pal<-c(colorRampPalette(c("white","#008000"))(4)[4:3],
+                colorRampPalette(c("white","#005080"))(4)[4:3],
+                colorRampPalette(c("white","red"))(4)[4:2],
+                "gold",
+                "#b35900",
+                "#a020f0"
+                ) %>% 
+  setNames(c("VEM1","VEM2","EM1","EM2","M1","M2","M3","PLL1","PLL2","ZPD"))
+```
+
+```{r}
+theme_set(theme(text=element_text(size = 18),
+                panel.background = element_rect(fill = "white",color="gray20"),
+                panel.grid=element_line(color="gray92"),
+                legend.key = element_rect(colour = NA, fill = NA)))
+source("~/Library/CloudStorage/OneDrive-KyotoUniversity/10xanalysis/core_functions.R")
+```
+
+```{r,echo=FALSE}
+des <- readRDS("~/Library/CloudStorage/OneDrive-KyotoUniversity/10xanalysis/RMD for analysis/Murase_paper/Final/5_DEGs_vivovsvitro.rds")
+```
+
+```{r}
+des<-names(des) %>% 
+  setNames(.,.) %>% 
+  lapply(function(x){
+    de<-des[[x]]
+    de<-de[is.na(de$p.value)==F,]
+    return(de)
+    })
+```
+
+
+```{r}
+markers<-c(
+  "HBG2", "HBG1", "HBA2", "HBA1",
+  "KHDC3L", "SMARCA2", "OOEP",
+  "TBX1", "ANXA2", "CALD1", "ID1", "PXDN", "AMOTL2", "ANGPTL4", "THY1", "EPHB4",
+  "EID1", "SFRP2", "LBH", "IFI16", "MSX2", "ID1", "ID4", "ID3", "BCOR", "PITX1", "SAMD11",
+  
+  "SYCP2", "TEX14", "TEX15",
+  "ZCWPW1", "KHDC3L", "OOEP",
+  "DLX1", "DLX2", "GATA3", "YBX1", "GATA2", "HEY12", "MAGEC1", "MSX1", "NKX2-5", "MAGEA6", "MAGEA3",
+  "MAGEA4", "MSX2", "NOG", "VAX1", "ISL1", "TBX3", "ID2", "ID1", "HAND1", "MAGEB2", "ID3", "MAGEB1",
+  "NRP2", "ANXA2", "UNC5B", "FN1", "THY1", "RHOB", "SOX17", "COL4A2", "HEY1", "CALD1",
+  "ID1", "HAND1", "PXDN", "FLNA", "ANGPTL4", "EPHB4", "ENG",
+  "DLX1", "DLX2", "HEY1", "GATA2",
+  "LYN", "SEMA6A", "GSTP1", "SPRY4", "DUSP6",
+  "DLX1", "SFRP2", "BAMBI", "NOG",
+  "SFRP2", "SOX17", "NOG", "SHISA3", "NKX2-5", "ISL1", "CTHRC1",
+  "STRA8", "REC8", "ZGLP1", "TET1", "SMC1B", "TDRD1", "SYCP3"
+  )
+TF<-NULL
+```
+
+### log2FC>1.5{.tabset .tabset-fade}
+
+```{r}
+plts<-volcano_plot(des,log2FC=1.5,celltype_pal=celltype_pal)
+```
+
+```{r,fig.width=20,fig.height=4*ceiling(length(plts)/3)}
+p1<-grid.arrange(grobs=plts,ncol=4)
+
+p1
+
+pdf(paste0(filename,"_I-2.pdf"), width =8, height = 4)
+grid.arrange(grobs=plts,ncol=3)
+dev.off()
+
+ggsave(paste0(filename,"_I-2.png"),wrap_plots(plts, ncol = 4),width=10,height=4,dpi=1200)
+```
+
+```{r,fig.width=4,fig.height=1.5}
+no.degs(des,log2FC_thres = 1.5)
+
+
+```
+
+```{r,fig.width=4,fig.height=1.5}
+p1<-no.degs(des,log2FC_thres = 1.5,annot=F)
+
+p1
+
+pdf(paste0(filename,"_I-1.pdf"), width =9, height = 3)
+p1
+dev.off()
+```
+
+```{r}
+DEGs<-names(des) %>%
+  setNames(.,.) %>%
+  lapply(function(x){
+    cluster1<-gsub(" ->.+$","",x)
+    cluster2<-gsub("^.+-> ","",x)
+    group<-seurat$tmp.cluster
+    a<-des[[x]] %>%
+      dplyr::filter(p.value<0.05) %>%
+      dplyr::filter(abs(log2FC)>1.5) %>%
+      dplyr::arrange(desc(log2FC))
+    cells.1<-(group==cluster1)
+    cells.2<-(group==cluster2)
+    data.use<-seurat[["RNA"]]@data
+    pseudocount.use=1
+    genes.use<-a$genes
+    a<-dplyr::mutate(a,comparison=x,
+                    VIVO=apply(X = data.use[genes.use, cells.1, drop = F], MARGIN = 1, FUN = function(x) log(x = mean(x = expm1(x = x)) + 1)),
+                    VITRO=apply(X = data.use[genes.use, cells.2, drop = F], MARGIN = 1, FUN = function(x) log(x = mean(x = expm1(x = x)) + 1)),
+                    genes=gsub("^MT-","",genes))
+    
+    return(a)
+  }) %>%
+  do.call(rbind,.)
+```
+
+```{r}
+#DEGs<-names(des) %>% 
+ # setNames(.,.) %>% 
+ # lapply(function(x){
+ #   a<-des[[x]] %>% 
+ #     dplyr::filter(p.value<0.05) %>% 
+ #     dplyr::filter(abs(log2FC)>1.5) %>% 
+ #     dplyr::arrange(desc(log2FC)) %>% 
+ #     dplyr::mutate(comparison=x) %>% 
+ #     dplyr::mutate(genes=MT.name(genes,add.mt=F)) %>% 
+ #     dplyr::mutate()
+  #}) %>% 
+ # do.call(rbind,.)
+```
+
+```{r}
+fwrite(DEGs,"~/Library/CloudStorage/OneDrive-KyotoUniversity/10xanalysis/RMD for analysis/Murase_paper/Final/5_DEGs_MAST_log2FC1.5_vivovsvitro.csv")
+```

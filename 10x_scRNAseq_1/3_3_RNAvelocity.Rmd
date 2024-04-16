@@ -1,0 +1,152 @@
+---
+title: '3_3_RNAvelocity'
+author: "Ryuta Yokogawa"
+output:
+  html_document:
+    number_sections: yes
+    toc: true
+    toc_float: true
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "~/Library/CloudStorage/OneDrive-KyotoUniversity/10xanalysis/RMD for analysis/Murase_paper/Final")
+```
+
+data: 
+
+Hs_in-vivo (wk7, wk9, wk10, wk11, wk13, wk16)
+Hs_in-vitro (c11, c56, c86, c117)
+
+# Set up
+```{r}
+filename<-"3_3_RNAvelocity"
+orig.ident<-c("AC7w","AC9w","AC10w","YK11w","AC13w","AC16w","c11","c56","c86","c117")
+dataset<-c(rep("Hs_in-vivo",6), rep("Hs_in-vitro",4))
+mapping<-"cr601_GRCh38p12chrxmv2_20221222"
+```
+
+#load libraries
+```{r , warning=FALSE , message=FALSE}
+library(reticulate)
+library(SeuratDisk)
+library(tidyverse)
+```
+
+#解析環境
+```{r}
+ sessionInfo() 
+```
+
+#conda環境の読み込み
+```{r}
+use_condaenv(condaenv = "scvelo", required = TRUE) 
+```
+
+```{python}
+filename="3_3_RNAvelocity"
+inpath="/Users/ry/Library/CloudStorage/OneDrive-KyotoUniversity/10xanalysis/RMD for analysis/Murase_paper/Final"
+import scvelo as scv
+import scanpy as sc
+import numpy as np
+from matplotlib.backends.backend_pdf import PdfPages
+```
+
+```{r}
+celltype_pal<-c(colorRampPalette(c("white","#008000"))(4)[4:3],
+                colorRampPalette(c("white","#005080"))(4)[4:3],
+                colorRampPalette(c("white","red"))(4)[4:2],
+                "gold",
+                "#b35900",
+                "#a020f0"
+                ) %>% 
+  setNames(c("VEM1","VEM2","EM1","EM2","M1","M2","M3","PLL1","PLL2","ZPD"))
+```
+
+
+## Hs_in vivo (stochastic)
+
+```{python}
+adata = scv.read(inpath+"/3_2_RNAvelocity/VIVO.h5ad")
+#最後にデータを書き込みのエラー防止のため必要
+adata.raw = adata
+new_colors=np.array(["#005080","#FF0000","#FF5555","#FFAAAA","gold","#a020f0"])
+adata.uns['cluster_colors'] = new_colors
+
+adata.layers["spliced"]=adata.X
+
+with open(inpath+"/3_2_RNAvelocity/VIVO_mnn.csv") as file_name:
+    array = np.loadtxt(file_name, delimiter=",")
+
+adata.obsm["X_mnn"]=array
+
+with open(inpath+"/3_2_RNAvelocity/VIVO_umap.csv") as file_name:
+    array = np.loadtxt(file_name, delimiter=",")
+
+adata.obsm["X_umap"]=array
+```
+
+```{python}
+#https://scvelo.readthedocs.io/VelocityBasics.htmlを参照
+scv.pp.moments(adata, n_pcs=30, n_neighbors=30)
+scv.tl.velocity(adata,mode='stochastic',use_raw=False)
+scv.tl.velocity_graph(adata)
+```
+
+```{python}
+results_file = filename+'_VIVO_stochastic.pdf'
+scv.pl.velocity_embedding_stream(adata, basis="mnn", color="cluster",legend_loc="none",figsize=(8,8))
+scv.pl.velocity_embedding_stream(adata, basis="umap", color="cluster",save=results_file,legend_loc="none",figsize=(8,8))
+```
+
+↓修正箇所
+```{python}
+results_file = filename+'_VIVO_stochastic'  
+adata.write(results_file+".h5ad")
+np.savetxt(results_file+"_UMAP.txt",adata.obsm["velocity_umap"], delimiter='\t')
+```
+↑
+
+## Hs_in vitro (stochastic)
+
+```{python}
+adata = scv.read(inpath+"/3_2_RNAvelocity/VITRO.h5ad")
+#最後にデータを書き込みのエラー防止のため必要
+adata.raw = adata
+new_colors=np.array(["#008000", "#55AA55", "#005080", "#558AAA", "#FF0000", "#FF5555", 
+"#FFAAAA", "gold", "#b35900"])
+adata.uns['cluster_colors'] = new_colors
+
+adata.layers["spliced"]=adata.X
+
+with open(inpath+"/3_2_RNAvelocity/VITRO_mnn.csv") as file_name:
+    array = np.loadtxt(file_name, delimiter=",")
+
+adata.obsm["X_mnn"]=array
+
+with open(inpath+"/3_2_RNAvelocity/VITRO_umap.csv") as file_name:
+    array = np.loadtxt(file_name, delimiter=",")
+
+adata.obsm["X_umap"]=array
+```
+
+```{python}
+#https://scvelo.readthedocs.io/VelocityBasics.htmlを参照
+scv.pp.moments(adata, n_pcs=30, n_neighbors=30)
+scv.tl.velocity(adata,mode='stochastic',use_raw=False)
+scv.tl.velocity_graph(adata)
+```
+
+```{python}
+results_file = filename+'_VITRO_stochastic.pdf'
+scv.pl.velocity_embedding_stream(adata, basis="mnn", color="cluster",legend_loc="none",figsize=(8,8))
+scv.pl.velocity_embedding_stream(adata, basis="umap", color="cluster",save=results_file,legend_loc="none",figsize=(8,8))
+```
+
+↓修正箇所
+```{python}
+results_file = filename+'_VITRO_stochastic'  
+adata.write(results_file+".h5ad")
+np.savetxt(results_file+"_UMAP.txt",adata.obsm["velocity_umap"], delimiter='\t')
+```
+

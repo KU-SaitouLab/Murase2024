@@ -1,0 +1,76 @@
+---
+title: "scrublet_ko1"
+author: "Yusuke Murase"
+date: "8/5/2022"
+output: html_document
+---
+
+```{r setup for scrublet}
+library(reticulate)
+```
+
+```{r prep object}
+UMImatrix <- ko1[["RECODE"]]@counts#このマトリックスはcolnamesがcellbarcode、rownamesがgene symbolである。
+genesymbolUMI <- rownames(ko1[["RECODE"]]@counts)
+cellbarcodeUMI <- colnames(ko1[["RECODE"]]@counts)
+```
+
+```{python Quarity check:remove multiplets by scrublet}
+import scrublet as scr
+import scipy.io
+import matplotlib.pyplot as plt
+import numpy as np
+import os 
+plt.rcParams['font.family'] = 'sans-serif'
+plt.rcParams['font.sans-serif'] = 'Arial'
+plt.rc('font', size=14)
+plt.rcParams['pdf.fonttype'] = 42
+
+counts_matrix = r.UMImatrix.T.tocsc() 
+genes = r.genesymbolUMI
+print('Counts matrix shape: {} rows, {} columns'.format(counts_matrix.shape[0], counts_matrix.shape[1]))
+print('Number of genes in gene list: {}'.format(len(genes)))
+```
+
+```{python scrublet 1st histogram}
+scrub = scr.Scrublet(counts_matrix, expected_doublet_rate=0.005)
+#https://kb.10xgenomics.com/hc/en-us/articles/360001378811-What-is-the-maximum-number-of-cells-that-can-be-profiled-
+#input ~9000 cells, recovered ~5000cells -> 4.0%
+#input ~1650 cells, recovered ~1000cells -> 0.8%
+#input ~825 cells, recovered ~500cells -> 0.4%
+doublet_scores, predicted_doublets = scrub.scrub_doublets(min_counts=2, 
+                                                          min_cells=3, 
+                                                          min_gene_variability_pctl=85, 
+                                                          n_prin_comps=30)#default
+                                                          
+                                                          
+scrub.plot_histogram();
+plt.show()
+```
+
+```{python scrublet UMAP}
+print('Running UMAP...')
+scrub.set_embedding('UMAP', scr.get_umap(scrub.manifold_obs_, 10, min_dist=0.3))
+
+# # Uncomment to run tSNE - slow
+# print('Running tSNE...')
+# scrub.set_embedding('tSNE', scr.get_tsne(scrub.manifold_obs_, angle=0.9))
+
+# # Uncomment to run force layout - slow
+# print('Running ForceAtlas2...')
+# scrub.set_embedding('FA', scr.get_force_layout(scrub.manifold_obs_, n_neighbors=5. n_iter=1000))
+    
+print('Done.')
+scrub.plot_embedding('UMAP', order_points=True);
+
+plt.show()
+
+exit
+```
+
+```{r scrublet_multiplet_removal_from_matrix}
+rownames(py$predicted_doublets) <- cellbarcodeUMI
+ko1 <- AddMetaData(ko1,py$predicted_doublets,"Is_doublets")
+ko1 <- subset(ko1, subset = Is_doublets == "FALSE")
+
+```

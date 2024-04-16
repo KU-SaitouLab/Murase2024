@@ -1,0 +1,200 @@
+---
+title: '5_1_DEGs_vivovsvitro'
+author: "Ryuta Yokogawa"
+output:
+  html_document:
+    number_sections: yes
+    toc: true
+    toc_float: true
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "~/Library/CloudStorage/OneDrive-KyotoUniversity/10xanalysis/RMD for analysis/Murase_paper/Final")
+```
+
+data: 
+
+Hs_in-vivo (AC7w, AC9w, AC10w, YK11w, AC13w, AC16w)
+Hs_in-vitro (c11, c56, c86, c117)
+
+
+# Set up
+```{r}
+filename<-"5_DEGs_vivovsvitro"
+orig.ident<-c("AC7w","AC9w","AC10w","YK11w","AC13w","AC16w","c11","c56","c86","c117")
+dataset<-c(rep("Hs_in-vivo",6), rep("Hs_in-vitro",4))
+mapping<-"cr60GRCh38p12chrxmv1b1"
+```
+
+```{r}
+if(!dir.exists(filename)){
+    dir.create(filename)
+}
+```
+
+## Load libraries
+```{r}
+suppressPackageStartupMessages({
+  library(SeuratWrappers)
+  library(patchwork)
+  library(Seurat)
+  library(Matrix)
+  library(data.table)
+  library(gridExtra)
+  library(metaMA)
+  library(knitr)
+  library(ggrepel)
+  library(tidyverse)
+})
+set.seed(0)
+```
+
+## Import data
+```{r}
+seurat<-readRDS("~/Library/CloudStorage/OneDrive-KyotoUniversity/10xanalysis/RMD for analysis/Murase_paper/Final/2_annotation_vivoACYK_c11_56_86_117_res0.8_5000HVGs_exp2in5cells.rds")
+celltype_pal<-rep(c("#1F77B4","#FF7F0E"),5) %>% 
+  setNames(c("VEM_vivo", "VEM_vitro", "EM_vivo", "EM_vitro", "M_vivo", "M_vitro", "PLL_vivo", "PLL_vitro", "ZPD_vivo", "ZPD_vitro"))
+
+cluster_pal<-c(colorRampPalette(c("white","#008000"))(4)[4:3],
+                colorRampPalette(c("white","#005080"))(4)[4:3],
+                colorRampPalette(c("white","red"))(4)[4:2],
+                "gold",
+                "#b35900",
+                "#a020f0"
+                ) %>% 
+  setNames(c("VEM1","VEM2","EM1","EM2","M1","M2","M3","PLL1","PLL2","ZPD"))
+```
+
+```{r}
+theme_set(theme(text=element_text(size = 18),
+                panel.background = element_rect(fill = "white",color="gray20"),
+                panel.grid=element_line(color="gray92"),
+                legend.key = element_rect(colour = NA, fill = NA)))
+source("~/Library/CloudStorage/OneDrive-KyotoUniversity/10xanalysis/core_functions.R")
+```
+
+
+```{r}
+heat3<-function(seurat,genes,cell_group=NULL,cell_cluster=NULL,gene_cluster=NULL,slot="data",cell_pal=NULL,gene_pal=NULL,assay=NULL,...){ #allow for duplicated gene names
+  #genes<-genes[duplicated(genes)==FALSE]
+  genes<-genes[genes%in%rownames(seurat)]
+  group<-seurat@meta.data[,cell_group] 
+  if(class(group)!="factor"){
+    group<-factor(group)
+  }
+  dat<-GetAssayData(seurat,assay=assay,slot=slot)
+  mat<-levels(group) %>% 
+    lapply(function(y){
+      if(y%in%group){
+        if (sum(group==y)>1){
+          dat[genes,group==y] %>% 
+            rowMeans()
+        }else{
+          dat[genes,group==y]
+        }
+      }else{
+        rep(NA,length(genes))
+      }
+    }) %>% do.call(cbind,.) %>% 
+    as.data.frame() %>% 
+    `colnames<-`(levels(group))%>% 
+    `rownames<-`(1:nrow(.))#rename rownames to allow duplicated gene name.
+  cell_pal_list<-1:length(cell_cluster) %>% 
+    setNames(.,cell_cluster) %>% 
+    lapply(function(x){
+      cell_pal[[x]]
+    })
+  
+  col_pal = list(cell_pal,
+                 list(gene_cluster = gene_pal)) %>% 
+    unlist(recursive=F)
+  
+  if(is.null(cell_group)==F){
+    mat_col <- data.frame(cell_cluster=levels(group),
+                          row.names = colnames(mat))
+  }else{
+    mat_col<-NULL
+  }
+  if(is.null(gene_cluster)==F){
+    mat_row <- data.frame(gene_cluster=gene_cluster,
+                          row.names = 1:length(genes))
+  }else{
+    mat_row<-NULL
+  }
+  
+  mat_row=data.frame(gene_cluster=gene_cluster,row.names = 1:length(genes))
+  if(slot=="scale.data"){
+    breaksList = seq(-2, 2, by = 0.01)
+  }else{
+    breaksList = c(seq(0, 0.99, by = 0.01),seq(1, 4, by = 0.05))
+  }
+  pheatmap::pheatmap(mat,cluster_rows = F,cluster_cols = FALSE, 
+                     color=colorRampPalette(rev(RColorBrewer::brewer.pal(n = 10, name = "RdYlBu")))(length(breaksList)),
+                     breaks = breaksList,
+                     annotation_col=mat_col,
+                     annotation_row=mat_row,
+                     annotation_colors = col_pal,
+                     annotation_names_col=F,
+                     annotation_names_row=F,
+                     show_colnames = F, show_rownames=F,
+                     fontsize_row=5,#defaultは10
+                     fontsize_col=10,#defaultは10
+                     ...)
+}
+```
+
+
+```{r}
+markers<-c("REC8","OTX2","HORMAD1","VIM","ZP4","SYCP1","SYCE3","SMC1B","MEI1","JAG1","SPO11","SYCP2","VWF","NANOG","SYCP3","ANHX","TEX12","ENG","PDPN","NLRP7","NLRP11","NLRP4","NLRP13","NLRP5","ZP2","MMP2","PAGE1","TEX11","FGF13","FLNA","GPX1","LMOD3","ZP3","WEE2","NOBOX","FGFR3","POU5F1","LIN28A","DPPA4","TFAP2C","PRDM1","PRDM14", "TEX15","STK31","PAGE2B","IL13RA1","PAGE2","TDRD1","MORC1","FIGLA","SYCE1","RAD51AP2","RAD9B","PRDM9","DMRTB1","WEE1", "HORMAD2","TP63","PECAM1","ZGLP1","STRA8","GDF9","TDRD6","DMRT1","DPPA3","MKI67","ETV4","ID1","ID2","ID3", "TEAD4","KLHL35","MEIOB","PIWIL4","NFATC1","DPPA5","ESRP1","IFITM1","ACTG2","SCML1","ASB9","DUSP9","CASP7", "PRRX2","DLK1","HES6","PADI6","GLRX","SHCBP1L","PAX6","PXDN","LOXL2","KPNA7","MVP","SPDYA","STAG3","DNMT1", "TFCP2L1","KDM6B","CDC20","PRC1","BUB1B","CCNB1","ZCWPW1","MAEL","FAM9B","GMPR","TMEM160","IQCB1", "DMC1","MTL5","NPC2","TUBB2B","KIAA0101","SOHLH1","TMEM163","HUS1B","KLHL13","PHF8","CASC5","CCDC109B", "BHMG1","IL22RA1", "BRDT", "LOC102723543", "DAZL", "IL12B", "KHDC1L", 
+"STK31", "CHCHD2", "ZNF736", "LRRC61", "TUSC1", "C9orf64", "PLAU", 
+"A2M", "LOC105369746", "GTSF1", "PIWIL1", "MEG3", "SPESP1", "SPATA22", 
+"USP6", "TDRD12", "ZNF534", "NLRP9", "ZNF667", "ZNF667-AS1", 
+"LOC107985433", "PRAME", "MAP7D2", "MAGEB2", "MAGEB1", "LDOC1","LINC01160", "RHEX", "GCSAML-AS1", "EMX1", "C2CD6", "KRBOX1", 
+"DCAF4L1", "PDCL2", "RBM46", "DDX4", "C5orf47", "HDGFL1", "OOEP", 
+"DDX43", "LOC101928688", "LOC101929128", "PIWIL2", "LOC101926892", 
+"DCAF4L2", "KCNV2", "ANKRD2", "CYP2E1", "CTSF", "GDPD4", "LOC105369655", 
+"SYCP3", "ANHX", "TDRD9", "LOC105376917", "ZNF492", "DSCR8", 
+"CXorf67", "LUZP4", "MAGEC1", "MAGEA11", "MAGEA4")
+TF<-NULL
+```
+
+```{r}
+seurat$tmp.cluster<-seurat$cluster %>% as.character()
+seurat$tmp.cluster<-gsub("[0-9]","",seurat$tmp.cluster)
+seurat$tmp.orig.ident<-ifelse(seurat$orig.ident%in%c("c11","c56","c86","c117"),"vitro","vivo")
+seurat$tmp.cluster<-paste0(seurat$tmp.cluster,"_",seurat$tmp.orig.ident) %>% 
+  factor(levels=paste0(rep(c("VEM","EM","M","PLL","ZPD"),each=2),"_",c("vivo","vitro")))
+ table(seurat$tmp.cluster) %>% addmargins()
+```
+
+```{r,fig.width=5,fig.height=5}
+DimPlot(seurat,group.by="tmp.cluster")+
+  scale_color_manual(values=celltype_pal)
+```
+
+
+# DEGs
+
+## MAST{.tabset .tabset-fade}
+
+```{r}
+combs<-matrix(c("EM_vivo","M_vivo","PLL_vivo",
+                "EM_vitro","M_vitro","PLL_vitro"),
+              nrow=2,byrow = TRUE)
+```
+
+```{r}
+seurat<-SetIdent(seurat,value="tmp.cluster")
+```
+
+```{r,eval=FALSE}
+des<-apply(combs,2,function(x) do_de(x[1],x[2]))
+names(des)<-apply(combs,2,function(x) paste0(x[1]," -> ",x[2]))
+saveRDS(des,"~/Library/CloudStorage/OneDrive-KyotoUniversity/10xanalysis/RMD for analysis/Murase_paper/Final/5_DEGs_vivovsvitro.rds")
+```
+
+```{r}
+
+```
+

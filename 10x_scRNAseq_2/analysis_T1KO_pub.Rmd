@@ -1,0 +1,621 @@
+---
+title: "Untitled"
+author: "Yusuke Murase"
+date: "2023/1/18"
+output: html_document
+---
+
+```{r data import}
+library(Seurat)
+library(Matrix)
+library(SeuratObject)
+library(data.table)
+library(tidyverse)
+library(RColorBrewer)
+library(SeuratDisk)
+library(patchwork)
+library(readxl)
+library(amap)
+library(dendextend)
+
+#load CellRanger output
+data_p <- Read10X(data.dir = "your_directory/sample_feature_bc_matrix")# WT
+seurat_object_p = CreateSeuratObject(counts = data_p$`Gene Expression`, project = "prnt", min.cells = 3, min.features = 200)
+
+data_ko1 <- Read10X(data.dir = "your_directory/sample_feature_bc_matrix")# TET1 KO#1
+seurat_object_ko1 = CreateSeuratObject(counts = data_ko1$`Gene Expression`, project = "ko1", min.cells = 3, min.features = 200)
+
+data_ko2 <- Read10X(data.dir = "your_directory/sample_feature_bc_matrix")# TET1 KO#2
+seurat_object_ko2 = CreateSeuratObject(counts = data_ko2$`Gene Expression`, project = "ko2", min.cells = 3, min.features = 200)
+
+cells <- fread("your_directory/outs/multi/multiplexing_analysis/assignment_confidence_table.csv",select = c("Barcodes"))
+seurat_object_p <- subset(seurat_object_p, cells = cells$Barcodes)
+seurat_object_ko1 <- subset(seurat_object_ko1, cells = cells$Barcodes)
+seurat_object_ko2 <- subset(seurat_object_ko2, cells = cells$Barcodes)
+
+seurat_object_use <- merge(seurat_object_p, y = c(seurat_object_ko1,seurat_object_ko2), add.cell.ids = c("prnt","ko1","ko2"), project = "T1KO")
+
+saveRDS(seurat_object_use, "seurat_object_use.Rdata")
+```
+
+```{r data export for RECODE}
+write.table(t(as.matrix(GetAssayData(object = seurat_object_use, slot = "counts"))), 
+            'seurat_object_use_T1KO.csv', 
+            sep = ',', row.names = T, col.names = T, quote = F)
+#run desktop RECODE app with seurat_object_use_T1KO.csv
+```
+
+```{r load post RECODE data}
+data_RECODE<- read.table("seurat_object_use_T1KO.RECODE.csv", sep =",", header = T, row.names = 1 )
+
+seurat_object_use[["RECODE"]] <- CreateAssayObject(counts = Matrix(t(as.matrix(data_RECODE)), sparse = T))
+```
+
+```{r nCount and percent.mt filter}
+seurat_object_use[["percent.mt"]] <- PercentageFeatureSet(seurat_object_use, pattern = "^MT-")
+VlnPlot(seurat_object_use, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+plot1 <- FeatureScatter(seurat_object_use, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(seurat_object_use, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1 + plot2
+
+seurat_object_nC10k_nC100k_pmt10 <- subset(seurat_object_use, subset = nCount_RNA >10000 &  nCount_RNA <100000 & percent.mt < 10)
+VlnPlot(seurat_object_nC10k_nC100k_pmt10, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+```
+
+```{r preprocessing for scrublet}
+#subset object by genotye(CMO tag)
+DefaultAssay(seurat_object_nC10k_nC100k_pmt10) <- "RECODE"
+
+prnt <- subset(seurat_object_nC10k_nC100k_pmt10, subset = orig.ident == "prnt")
+ko1 <- subset(seurat_object_nC10k_nC100k_pmt10, subset = orig.ident == "ko1")
+ko2 <- subset(seurat_object_nC10k_nC100k_pmt10, subset = orig.ident == "ko2")
+#run scrublet one by one
+#scrublet_prnt.Rmd
+#scrublet_ko1.Rmd
+#scrublet_ko2.Rmd
+```
+
+```{r post-scrublet processing -ctrl}
+#merge 3 post-scrublet seurat objects
+SeuratObj_REC_scrublet <- merge(prnt, y = c(ko1,ko2), add.cell.ids = c("prnt","ko1","ko2"), project = "T1KO")
+sum(SeuratObj_REC_scrublet@meta.data[["Is_doublets"]])#0, single only
+DefaultAssay(SeuratObj_REC_scrublet)
+```
+
+```{r data normalization}
+SeuratObj_REC_scrublet <- NormalizeData(SeuratObj_REC_scrublet, normalization.method = "LogNormalize", scale.factor = 100000)#10kでなく100k 
+SeuratObj_REC_scrublet  <- FindVariableFeatures(SeuratObj_REC_scrublet, selection.method = "vst", nfeatures = 2000)
+top10 <- head(VariableFeatures(SeuratObj_REC_scrublet), 10)
+options(repr.plot.width = 12, repr.plot.height = 5)
+plot1 <- VariableFeaturePlot(SeuratObj_REC_scrublet)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+png("230119_SeuratObj_REC_scrublet_combiplot_100knorm.png", width = 1000)
+CombinePlots(plots = list(plot1, plot2))
+dev.off()
+all.genes <- rownames(SeuratObj_REC_scrublet)
+SeuratObj_REC_scrublet <- ScaleData(SeuratObj_REC_scrublet, features = all.genes)
+SeuratObj_REC_scrublet <- RunPCA(SeuratObj_REC_scrublet, features = VariableFeatures(object = SeuratObj_REC_scrublet))
+p1 <- DimPlot(SeuratObj_REC_scrublet, reduction = "pca", label = TRUE)
+p2 <- DimPlot(SeuratObj_REC_scrublet, reduction = "pca", label = TRUE, split.by ="orig.ident")
+png("230119_SeuratObj_REC_scrublet_PCA_100knorm.png", width = 1000)
+p1+p2
+dev.off()
+png("230119_SeuratObj_REC_scrublet_elbow_100knorm.png")
+ElbowPlot(SeuratObj_REC_scrublet, ndims = 50)
+dev.off()
+print(timestamp())##------ Wed Jan 18 23:23:11 2023 ------##
+```
+
+```{r}
+SeuratObj_REC_scrublet <- FindNeighbors(SeuratObj_REC_scrublet, dims = 1:22)
+SeuratObj_REC_scrublet <- FindClusters(SeuratObj_REC_scrublet, resolution = 0.5)
+SeuratObj_REC_scrublet <- RunUMAP(SeuratObj_REC_scrublet, dims = 1:22)
+DimPlot(SeuratObj_REC_scrublet, reduction = "umap", label = TRUE, pt.size = 0.5) + NoLegend()
+
+saveRDS(SeuratObj_REC_scrublet, "SeuratObj_REC_scrublet_dim22_reso05.Rdata")
+saveRDS(SeuratObj_REC_scrublet, "SeuratObj_T1KO.rds")
+SaveH5Seurat(SeuratObj_REC_scrublet,filename =  "SeuratObj_REC_scrublet_dim22_reso05.h5Seurat")
+
+new.cluster.ids <- c("cluster_1", #0
+                     "cluster_4", #1
+                     "cluster_5", #2 
+                     "cluster_2", #3
+                     "cluster_6", #4 
+                     "cluster_8", #5
+                     "cluster_9", #6
+                     "cluster_7", #7
+                     "cluster_3", #8
+                     "cluster_10", #9
+                     "cluster_11" #11
+)
+new.cluster.ids <- factor(new.cluster.ids, levels = c("cluster_1","cluster_2","cluster_3","cluster_4","cluster_5","cluster_6","cluster_7","cluster_8","cluster_9","cluster_10","cluster_11"))
+SetIdent(SeuratObj_REC_scrublet, value = "seurat_clusters")
+Idents(SeuratObj_REC_scrublet) %>% table()
+SeuratObj_REC_scrublet <- RenameIdents(SeuratObj_REC_scrublet, "0" = new.cluster.ids[1],"1" = new.cluster.ids[2],"2" = new.cluster.ids[3],"3" = new.cluster.ids[4],"4" = new.cluster.ids[5],"5" = new.cluster.ids[6],"6" = new.cluster.ids[7],"7" = new.cluster.ids[8],"8" = new.cluster.ids[9],"9" = new.cluster.ids[10],"10" = new.cluster.ids[11])
+
+Idents(SeuratObj_REC_scrublet)
+p <- DimPlot(SeuratObj_REC_scrublet, reduction = "umap", label = TRUE, pt.size = 0.5) + NoLegend()
+ggsave(paste0(Sys.Date(),"_DP_dim22_reso05_label_noLegend.tiff"),p
+       , width = 3.5, height = 3.5,dpi = 300)
+p <- DimPlot(SeuratObj_REC_scrublet, reduction = "umap", label = F, pt.size = 0.5) + NoLegend()
+ggsave(paste0(Sys.Date(),"_DP_dim22_reso05_nolabel_noLegend.tiff"),p
+       , width = 4, height = 3.5,dpi = 300)
+FeaturePlot(SeuratObj_REC_scrublet,features = "SOX17")
+```
+
+```{r marker gene expression Extended Data Fig11}
+DimPlot(SeuratObj_REC_scrublet, reduction = "umap")
+
+Ros2022and_sl_revised  <- c(
+  "NANOG","POU5F1",
+  "TFAP2C","SOX17","PRDM1",
+  "HAND1","GATA3","TFAP2A","CDX2",#AME and TE
+  "SDC1","ELF5","KRT7","KRT19",#Trophoblast
+  "ITGB4","NR2F2",#Trophoblast Io2021
+  "ISL1","BMP4","WNT6","GABRP","VTCN1", #AME
+  "FOXF1","VIM",
+  "PECAM1","SOX18","CLDN5",
+  "PDGFRA","PITX2",
+  "AFP","TTR",
+  "MKI67", "TOP2A")
+p <- DotPlot(SeuratObj_REC_scrublet, features = Ros2022and_sl_revised)+
+  scale_color_viridis_c()+
+  theme(axis.title = element_blank(),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        legend.position = "left",
+        legend.text = element_text(size = 8),
+        legend.title = element_text(size = 10),
+        plot.margin = margin(0,0,0,0,unit = "cm"))+
+  coord_flip()
+
+ggsave(paste0(Sys.Date(),"_DP_Ros2022and_sl_revised_dim22reso05_long.pdf"),p,dpi = 300,height = 7, width = 4.5)
+```
+
+```{r cluster compariason Extended Data Fig11}
+av.SeuratObj_REC_scrublet <- AverageExpression(SeuratObj_REC_scrublet, return.seurat = T)
+av.SeuratObj_REC_scrublet@assays$RECODE@data#log-norm average expression value
+av.var.gene <- av.SeuratObj_REC_scrublet@assays$RECODE@data %>% as.data.frame() %>% rownames_to_column() %>% filter(rowname %in% VariableFeatures(SeuratObj_REC_scrublet)) %>% column_to_rownames("rowname") %>% as.matrix()
+cor.exp <- as.data.frame(cor(av.var.gene, method = "spearman"))
+cor.exp$x <- rownames(cor.exp)
+
+dend <- hclust(d = Dist(t(av.var.gene), method = "euclidean"), method = "ward.D2")
+plot(dend, hang = -1)
+
+pdf(paste0(Sys.Date(),"_UHC_EUC_WD2_top2000.pdf"), height = 4)
+dend %>% rotate(rev(c(2,3,1,8,9,7,10,11,6,5,4))) %>% plot(hang = -1)
+dev.off()
+
+p <-cor.exp %>%  pivot_longer(-x) %>% mutate(fct.x = fct_inorder(x),
+                                         fct.name = factor(name, levels = rev(c("cluster_1",
+                                                      "cluster_2",
+                                                      "cluster_3",
+                                                      "cluster_4",
+                                                      "cluster_5",
+                                                      "cluster_6",
+                                                      "cluster_7",
+                                                      "cluster_8",
+                                                      "cluster_9",
+                                                      "cluster_10",
+                                                      "cluster_11")))) %>% 
+  ggplot(aes(x = fct.x, y = fct.name, fill = value))+
+  scale_fill_viridis_c(option = "A")+
+  geom_tile()+
+  theme_bw()+
+  theme(plot.background = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.background = element_blank(),
+        axis.line = element_blank(),
+        axis.ticks = element_blank(),
+        strip.background = element_rect(fill = "white", colour = "white"),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        axis.text = element_text(colour = "black"),
+        legend.text = element_text(colour = "black"),
+        axis.title = element_blank())
+ggsave(paste0(Sys.Date(),"_CORRHM_dim22reso05_top2000.pdf"), p, dpi = 300, height = 3, width =4)
+```
+
+```{r data export PAGA analysis Extended Data Fig11}
+SeuratObj_REC_scrublet$celltype <- as.character(Idents(SeuratObj_REC_scrublet))
+#Converting the `Seurat` object to an AnnData file is a two-step process. 
+#First, we [save the `Seurat` object](https://mojaveazure.github.io/seurat-disk/reference/SaveH5Seurat.html) as an h5Seurat file. For more details about saving `Seurat` objects to h5Seurat files, please see [this vignette](https://mojaveazure.github.io/seurat-disk/articles/h5Seurat-load.html); 
+#after the file is saved, we can [convert](https://mojaveazure.github.io/seurat-disk/reference/Convert.html) it to an AnnData file for use in Scanpy. Full details about the conversion processes are listed in the [manual page](https://mojaveazure.github.io/seurat-disk/reference/Convert.html) for the `Convert` function
+
+SaveH5Seurat(SeuratObj_REC_scrublet, filename = "SeuratObj_REC_scrublet_paga_input.h5Seurat")
+Convert("SeuratObj_REC_scrublet_paga_input.h5Seurat", dest = "h5ad")
+
+```
+
+```{r stats}
+hoge <- SplitObject(SeuratObj_REC_scrublet,split.by = "orig.ident")
+prnt_composition <- hoge$prnt@meta.data %>% .$seurat_clusters %>% table %>% data.frame() %>% rename("cl" = ".", "prnt" = "Freq")
+ko1_composition <-hoge$ko1@meta.data %>% .$seurat_clusters %>% table %>% data.frame() %>% rename("cl" = ".", "ko1" = "Freq")
+ko2_composition <-hoge$ko2@meta.data %>% .$seurat_clusters %>% table %>% data.frame() %>% rename("cl" = ".", "ko2" = "Freq")
+cl_col <-c(rev(brewer.pal(3,"Oranges")),rev(brewer.pal(8,"Greens")))
+composition <- left_join(by = "cl", left_join(by = "cl",prnt_composition,ko1_composition), ko2_composition) %>% 
+  mutate("cl_name" = c("cluster_1", #0
+                       "cluster_4", #1
+                       "cluster_5", #2 
+                       "cluster_2", #3
+                       "cluster_6", #4 
+                       "cluster_8", #5
+                       "cluster_9", #6
+                       "cluster_7", #7
+                       "cluster_3", #8
+                       "cluster_10", #9
+                       "cluster_11" #11
+),
+         fct.cl_name = factor(cl_name, levels = c("cluster_1","cluster_2","cluster_3","cluster_4","cluster_5","cluster_6","cluster_7","cluster_8","cluster_9","cluster_10","cluster_11")))
+
+
+p <- composition %>% select(-c(cl,cl_name)) %>% pivot_longer(-fct.cl_name) %>% ggplot(aes(x = fct(name),y = value,fill = fct.cl_name))+
+  geom_col(position = "fill", color = "black")+
+  scale_fill_manual(values =  cl_col)+
+  theme_classic()+
+   theme(plot.background = element_blank(),
+        #panel.grid.minor = element_blank(),
+        #panel.grid.major = element_blank(),
+        panel.background = element_blank(),
+        #axis.line = element_blank(),
+        #axis.ticks = element_blank(),
+        strip.background = element_rect(fill = "white", colour = "white"),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        axis.text = element_text(colour = "black"),
+        legend.text = element_text(colour = "black"),
+        legend.title = element_blank(),
+        axis.title = element_blank())
+
+ggsave(paste0(Sys.Date(),"_compotision.pdf"), p, dpi = 300, height = 3, width =2.75)
+
+hoge <- SplitObject(SeuratObj_REC_scrublet,split.by = "celltype")
+cls <- list()
+cl <- c("cluster_1","cluster_2","cluster_3","cluster_4","cluster_5","cluster_6","cluster_7","cluster_8","cluster_9","cluster_10","cluster_11")
+cls[[1]] <- hoge$cluster_1@meta.data %>% .$orig.ident %>% table %>% data.frame() %>% rename("geno" = ".", "cluster_1" = "Freq")
+cls[[2]] <- hoge$cluster_2@meta.data %>% .$orig.ident %>% table %>% data.frame() %>% rename("geno" = ".", "cluster_2" = "Freq")
+cls[[3]] <- hoge$cluster_3@meta.data %>% .$orig.ident %>% table %>% data.frame() %>% rename("geno" = ".", "cluster_3" = "Freq")
+cls[[4]] <- hoge$cluster_4@meta.data %>% .$orig.ident %>% table %>% data.frame() %>% rename("geno" = ".", "cluster_4" = "Freq")
+cls[[5]] <- hoge$cluster_5@meta.data %>% .$orig.ident %>% table %>% data.frame() %>% rename("geno" = ".", "cluster_5" = "Freq")
+cls[[6]] <- hoge$cluster_6@meta.data %>% .$orig.ident %>% table %>% data.frame() %>% rename("geno" = ".", "cluster_6" = "Freq")
+cls[[7]] <- hoge$cluster_7@meta.data %>% .$orig.ident %>% table %>% data.frame() %>% rename("geno" = ".", "cluster_7" = "Freq")
+cls[[8]] <- hoge$cluster_8@meta.data %>% .$orig.ident %>% table %>% data.frame() %>% rename("geno" = ".", "cluster_8" = "Freq")
+cls[[9]] <- hoge$cluster_9@meta.data %>% .$orig.ident %>% table %>% data.frame() %>% rename("geno" = ".", "cluster_9" = "Freq")
+cls[[10]] <- hoge$cluster_10@meta.data %>% .$orig.ident %>% table %>% data.frame() %>% rename("geno" = ".", "cluster_10" = "Freq")
+cls[[11]] <- hoge$cluster_11@meta.data %>% .$orig.ident %>% table %>% data.frame() %>% rename("geno" = ".", "cluster_11" = "Freq")
+　
+geno_comp <- cls[[1]] %>% left_join(by = "geno", cls[[2]]) %>% left_join(by = "geno", cls[[3]]) %>% left_join(by = "geno", cls[[4]]) %>% left_join(by = "geno", cls[[5]]) %>% left_join(by = "geno", cls[[6]]) %>% left_join(by = "geno", cls[[7]])%>% left_join(by = "geno", cls[[8]])%>% left_join(by = "geno", cls[[9]])%>% left_join(by = "geno", cls[[10]])%>% left_join(by = "geno", cls[[11]]) 
+
+geno_comp$cluster_1 <-  geno_comp$cluster_1   %>%  replace_na(0)
+geno_comp$cluster_2 <-  geno_comp$cluster_2   %>%  replace_na(0)
+geno_comp$cluster_3 <-  geno_comp$cluster_3   %>%  replace_na(0)
+geno_comp$cluster_4 <-  geno_comp$cluster_4   %>%  replace_na(0)
+geno_comp$cluster_5 <-  geno_comp$cluster_5   %>%  replace_na(0)
+geno_comp$cluster_6 <-  geno_comp$cluster_6   %>%  replace_na(0)
+geno_comp$cluster_7 <-  geno_comp$cluster_7   %>%  replace_na(0)
+geno_comp$cluster_8 <-  geno_comp$cluster_8   %>%  replace_na(0)
+geno_comp$cluster_9 <-  geno_comp$cluster_9   %>%  replace_na(0)
+geno_comp$cluster_10 <- geno_comp$cluster_10  %>%  replace_na(0)
+geno_col <-  c(rgb(232/256,	125/256,	113/256	),
+    rgb(83/256,	181/256,	75/256),
+    rgb(109/256, 157/256, 248/256)
+    )
+
+p <- geno_comp %>% 
+  mutate("genotype" = c("KO#1", "KO#2","parent"),
+         fct.geno = factor(genotype, levels = c("parent","KO#1", "KO#2"))) %>% 
+  select(-c("geno","genotype")) %>% pivot_longer(-fct.geno) %>% 
+  ggplot(aes(x = fct(name),y = value, fill = fct.geno))+
+  geom_col(#position = "fill", 
+           color = "black")+
+  scale_fill_manual(values =  geno_col)+
+  theme_classic()+
+   theme(plot.background = element_blank(),
+        #panel.grid.minor = element_blank(),
+        #panel.grid.major = element_blank(),
+        panel.background = element_blank(),
+        #axis.line = element_blank(),
+        #axis.ticks = element_blank(),
+        strip.background = element_rect(fill = "white", colour = "white"),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        axis.text = element_text(colour = "black"),
+        legend.text = element_text(colour = "black"),
+        legend.title = element_blank(),
+        axis.title = element_blank())
+  
+ggsave(paste0(Sys.Date(),"_geno_compotision_wide.pdf"), p, dpi = 300, height = 2.2, width =3.5)
+
+write.table(composition, "240226_composition_T1KO.txt", row.names = F)
+
+```
+
+```{r}
+#expanded PGCLCに絞り込んでVlnplotの作成
+hoge <- SeuratObj_REC_scrublet
+hoge <- RenameIdents(hoge,
+                     "cluster_1"  = "expanded PGCLC",
+                     "cluster_2"  = "expanded PGCLC",
+                     "cluster_3"  = "expanded PGCLC",
+                     "cluster_4"  = "AMLC_2",
+                     "cluster_5"  = "AMLC_2",  
+                     "cluster_6"  = "AMLC_2", 
+                     "cluster_7"  = "AMLC_1", 
+                     "cluster_8"  = "AMLC_1", 
+                     "cluster_9"  = "Endothelial cell",  
+                     "cluster_10" = "unknown_1", 
+                     "cluster_11" = "unknown_2"     
+                     )
+hoge <- subset(hoge, idents = "expanded PGCLC")
+hoge$orig.ident <- factor(hoge$orig.ident, levels = c("prnt", "ko1", "ko2"))
+VlnPlot(hoge, features = "PRDM1", split.by = "orig.ident", 
+        cols = c("#ECBA3F", "#34A952", "#BC362A")
+        )
+vln_hoge <- function(n){
+  VlnPlot(hoge, features = n, split.by = "orig.ident", 
+        cols = c("#BC362A","#ECBA3F", "#34A952")
+        )
+}
+
+vln_hoge("GATA3")
+vln_hoge("GATA2")
+vln_hoge("TBX3")
+vln_hoge("ISL1")
+vln_hoge("CEBPA")
+vln_hoge("NR2F2")
+vln_hoge("HAND1")
+vln_hoge("MSX1")
+vln_hoge("MEIS3")
+
+ggsave("hoge.pdf",vln_hoge("TBX3"))
+
+vln_pgclc <- function(n){
+  ggsave(paste0(Sys.Date(),"_",n,".pdf"),vln_hoge(n),height = 5, width = 5)
+}
+
+d6_up <- read.delim("/Users/yusukemurase/R/sc3seq/T1KO_v3/d6_expr_up.txt", header = F)
+dir.create("vln_pgclc_d6up")
+d6_up_10xvar<- intersect(hoge@assays[["RECODE"]]@var.features, d6_up$V1)
+setwd("/Users/yusukemurase/R/10x/T1KO_10x/T1KO_10X/vln_pgclc_d6up")
+for (i in 1:length(d6_up_10xvar)) {
+  vln_pgclc(d6_up_10xvar[i])
+}
+
+c12_up <- read.delim("/Users/yusukemurase/R/sc3seq/T1KO_v3/c12_expr_up.txt", header = F)
+dir.create("vln_pgclc_c12up")
+c12_up_10xvar<- intersect(hoge@assays[["RECODE"]]@var.features, c12_up$V1)
+setwd("/Users/yusukemurase/R/10x/T1KO_10x/T1KO_10X/vln_pgclc_c12up")
+for (i in 1:length(c12_up_10xvar)) {
+  vln_pgclc(c12_up_10xvar[i])
+}
+
+yab_DEG <- read.delim("expression_T1KO_DEG_list2284genes_20230221.txt", header = T)
+head(yab_DEG)
+
+hoge <- yab_DEG %>% filter(diff_iPSC == 1) %>% .$Name
+hoge <- union(hoge, 
+              yab_DEG %>% filter(diff_iMeLC == 1) %>% .$Name)
+hoge <- union(hoge, 
+              yab_DEG %>% filter(diff_d6 == 1) %>% .$Name)
+hoge <- union(hoge, 
+              yab_DEG %>% filter(diff_c12 == 1) %>% .$Name)
+DEG_up <- union(hoge, 
+              yab_DEG %>% filter(diff_c42 == 1) %>% .$Name)
+
+hoge <- yab_DEG %>% filter(diff_iPSC == -1) %>% .$Name
+hoge <- union(hoge, 
+              yab_DEG %>% filter(diff_iMeLC == -1) %>% .$Name)
+hoge <- union(hoge, 
+              yab_DEG %>% filter(diff_d6 == -1) %>% .$Name)
+hoge <- union(hoge, 
+              yab_DEG %>% filter(diff_c12 == -1) %>% .$Name)
+DEG_dw <- union(hoge, 
+              yab_DEG %>% filter(diff_c42 == -1) %>% .$Name)
+
+ex.fig.6h_gene <- read_xlsx("T1KO_GO.xlsx", sheet = 1)
+upcluster <- c("cluster1","cluster2","cluster3","cluster4","cluster5","cluster6","cluster7","cluster8")
+dwcluster <- c("cluster9","cluster10","cluster11","cluster12","cluster13")
+upDEG <- ex.fig.6h_gene %>% filter(Cluster %in% upcluster) %>% .$GeneID
+dwDEG <- ex.fig.6h_gene %>% filter(Cluster %in% dwcluster) %>% .$GeneID
+
+upDEG_biv <- intersect(cat.enh.genes$BivalentEnhancer, upDEG)
+biv_up_10xvar<- intersect(hoge@assays[["RECODE"]]@var.features, upDEG_biv)
+dir.create("vln_upDEG")
+setwd("/Users/yusukemurase/R/10x/T1KO_10x/T1KO_10X/vln_upDEG")
+for (i in 1:length(biv_up_10xvar)) {
+  vln_pgclc(biv_up_10xvar[i])
+}
+```
+
+```{r export count matrix Early Embryogenesis Prediction Tool Extebded Dato Fig}
+#Early Embryogenesis Prediction Tool(https://petropoulos-lanner-labs.clintec.ki.se/app/shinyprediction)
+write.table(as.matrix(GetAssayData(object = SeuratObj_REC_scrublet, slot = "counts")), 
+            'T1KO_counts.csv', sep = ',', row.names = T, col.names = NA, quote = F)
+
+as.matrix(GetAssayData(object = SeuratObj_REC_scrublet, slot = "counts"))
+read_csv('T1KO_counts.csv')
+```
+
+```{r Early embryogenesis prediction tool}
+EEPT_anno <- read_delim("yourdirectiry/Tag.2023-07-26.predicted.tsv")
+EEPT_anno$query_cell <- str_replace(EEPT_anno$query_cell, "\\.", "-")
+EEPT_anno
+cellid <- SeuratObj_REC_scrublet@assays[["RECODE"]]@counts@Dimnames[[2]]
+EEPT_anno_ordered <- EEPT_anno %>% arrange(match(query_cell, cellid)) %>% select(query_cell, ref_EML)
+
+SeuratObj_REC_scrublet$EEPT <- EEPT_anno_ordered$ref_EML
+SeuratObj_REC_scrublet <- SetIdent(SeuratObj_REC_scrublet, value = "EEPT")
+
+EEPT_col <- c("#E41A1C", "#377EB8", "#999999", "#4DAF4A", "#984EA3", "#FF7F00", "#FFFF33", "#A65628", "#F781BF", "black")
+
+DimPlot(SeuratObj_REC_scrublet, reduction = "umap",cols = EEPT_col)
+ggsave("231218_Dimplot_EEPT.pdf", DimPlot(SeuratObj_REC_scrublet, reduction = "umap",cols = EEPT_col),width = 2.9*2, height = 1.8*2)
+
+SeuratObj_REC_scrublet <- SetIdent(SeuratObj_REC_scrublet, value = "celltype")
+DimPlot(SeuratObj_REC_scrublet, reduction = "umap")
+
+#composition 
+```
+
+```{r Fig.5b}
+#Dimplotで注目するgenotype意外をgrayout
+SeuratObj_REC_scrublet <- readRDS("SeuratObj_T1KO.rds")
+Idents(SeuratObj_REC_scrublet) <- "orig.ident"
+DimPlot(SeuratObj_REC_scrublet, reduction = "umap")
+
+layer_order <- fct_inorder(rev(c("WT","KO#1","KO#2","other")))
+
+Seurat_WT <- RenameIdents(SeuratObj_REC_scrublet,"prnt" = layer_order[4], "ko1" = layer_order[1], "ko2" = layer_order[1])
+Seurat_WT@active.ident
+pW <- DimPlot(Seurat_WT, reduction = "umap", order = T)+
+  scale_color_manual(values = c("gray","red"))+
+  theme_void()+
+  theme(panel.background = element_rect(fill = "white", colour = "black", size = 1.0))
+Seurat_KO1 <- RenameIdents(SeuratObj_REC_scrublet,"prnt" = layer_order[1], "ko1" = layer_order[3], "ko2" = layer_order[1])
+Seurat_KO1@active.ident
+pK1 <- DimPlot(Seurat_KO1, reduction = "umap", order = T)+
+  scale_color_manual(values = c("gray", "red"))+
+  theme_void()+
+  theme(panel.background = element_rect(fill = "white", colour = "black", size = 1.0))
+Seurat_KO2 <- RenameIdents(SeuratObj_REC_scrublet,"prnt" = layer_order[1], "ko1" = layer_order[1], "ko2" = layer_order[2])
+Seurat_KO2@active.ident
+pK2 <- DimPlot(Seurat_KO2, reduction = "umap",order = T)+
+  scale_color_manual(values = c("gray", "red"))+
+  theme_void()+
+  theme(panel.background = element_rect(fill = "white", colour = "black", size = 1.0))
+
+ggsave("231221_DP_WTonly.pdf", pW+NoLegend(), width = 1.53*3, height = 1.1*3 )
+ggsave("231221_DP_KO1only.pdf", pK1+NoLegend(), width = 1.53*3, height = 1.1*3 )
+ggsave("231221_DP_KO2only.pdf", pK2+NoLegend(), width = 1.53*3, height = 1.1*3 )
+```
+
+```{r EDF11i}
+hoge <- SeuratObj.combined
+hoge <- RenameIdents(hoge,
+                     "cluster_1"  = "This study",
+                     "cluster_2"  = "This study",
+                     "cluster_3"  = "This study",
+                     "cluster_4"  = "This study",
+                     "cluster_5"  = "This study",  
+                     "cluster_6"  = "This study", 
+                     "cluster_7"  = "This study", 
+                     "cluster_8"  = "This study", 
+                     "cluster_9"  = "This study",  
+                     "cluster_10" = "This study", 
+                     "cluster_11" = "This study",      
+                     "Zheng_PGCLC" = "Zheng et al., 2019", 
+                     "Zheng_AMLC1" = "Zheng et al., 2019", 
+                     "Zheng_AMLC2" = "Zheng et al., 2019",      
+                     "Zheng_MeLC1" = "Zheng et al., 2019", 
+                     "Zheng_MeLC2" = "Zheng et al., 2019", 
+                     "Zheng_MeLC3" = "Zheng et al., 2019", 
+                     "Zheng_MeLC4" = "Zheng et al., 2019")
+DimPlot(hoge, reduction = "umap", label = F, pt.size = 1, 
+        cols = alpha(c("grey","red"), 0.3), order = c("This study","Zheng et al., 2019"))
+DimPlot(hoge, reduction = "umap", label = F, pt.size = 1, 
+        cols = alpha(c("gray","blue"), 0.3), order = c("Zheng et al., 2019","This study"))
+
+```
+
+```{r cell cycle scoring PCAdim 1:22, reso 0.5}
+SeuratObj_REC_scrublet_ccr <- SeuratObj_REC_scrublet
+SeuratObj_REC_scrublet_ccr <- CellCycleScoring(SeuratObj_REC_scrublet_ccr, 
+                                               s.features   = UpdateSymbolList(symbols = cc.genes$s.genes), 
+                                               g2m.features = UpdateSymbolList(symbols = cc.genes$g2m.genes), set.ident = TRUE)
+
+SeuratObj_REC_scrublet_ccr$Phase <- factor(SeuratObj_REC_scrublet_ccr$Phase, levels = c("G1","S","G2M")) 
+p <- DimPlot(SeuratObj_REC_scrublet_ccr, reduction = "umap")+
+  scale_colour_manual(values = c("#FFDA13",#yellow
+                                 "#0066E7",#blue
+                        "#D4070F")) +#red
+  NoLegend()
+ggsave(paste0(Sys.Date(),"_phase_DimpPlot.tiff"), p, dpi = 300, height = 3.5, width = 3.5)
+
+SeuratObj_REC_scrublet_ccr@active.ident
+
+hoge <- SplitObject(SeuratObj_REC_scrublet_ccr,split.by = "celltype")
+
+cls <- list()
+cl <- c("cluster_1","cluster_2","cluster_3","cluster_4","cluster_5","cluster_6","cluster_7","cluster_8","cluster_9","cluster_10","cluster_11")
+cls[[1]] <- hoge$cluster_1@meta.data %>% .$Phase %>% table %>% data.frame() %>% rename("phase" = ".", "cluster_1" = "Freq")
+cls[[2]] <- hoge$cluster_2@meta.data %>% .$Phase %>% table %>% data.frame() %>% rename("phase" = ".", "cluster_2" = "Freq")
+cls[[3]] <- hoge$cluster_3@meta.data %>% .$Phase %>% table %>% data.frame() %>% rename("phase" = ".", "cluster_3" = "Freq")
+cls[[4]] <- hoge$cluster_4@meta.data %>% .$Phase %>% table %>% data.frame() %>% rename("phase" = ".", "cluster_4" = "Freq")
+cls[[5]] <- hoge$cluster_5@meta.data %>% .$Phase %>% table %>% data.frame() %>% rename("phase" = ".", "cluster_5" = "Freq")
+cls[[6]] <- hoge$cluster_6@meta.data %>% .$Phase %>% table %>% data.frame() %>% rename("phase" = ".", "cluster_6" = "Freq")
+cls[[7]] <- hoge$cluster_7@meta.data %>% .$Phase %>% table %>% data.frame() %>% rename("phase" = ".", "cluster_7" = "Freq")
+cls[[8]] <- hoge$cluster_8@meta.data %>% .$Phase %>% table %>% data.frame() %>% rename("phase" = ".", "cluster_8" = "Freq")
+cls[[9]] <- hoge$cluster_9@meta.data %>% .$Phase %>% table %>% data.frame() %>% rename("phase" = ".", "cluster_9" = "Freq")
+cls[[10]] <- hoge$cluster_10@meta.data %>% .$Phase %>% table %>% data.frame() %>% rename("phase" = ".", "cluster_10" = "Freq")
+cls[[11]] <- hoge$cluster_11@meta.data %>% .$Phase %>% table %>% data.frame() %>% rename("phase" = ".", "cluster_11" = "Freq")
+　
+phase_comp <- cls[[1]] %>% left_join(by = "phase", cls[[2]]) %>% left_join(by = "phase", cls[[3]]) %>% left_join(by = "phase", cls[[4]]) %>% left_join(by = "phase", cls[[5]]) %>% left_join(by = "phase", cls[[6]]) %>% left_join(by = "phase", cls[[7]])%>% left_join(by = "phase", cls[[8]])%>% left_join(by = "phase", cls[[9]])%>% left_join(by = "phase", cls[[10]])%>% left_join(by = "phase", cls[[11]]) 
+
+phase_comp$cluster_2 <- phase_comp$cluster_2  %>%  replace_na(0)
+phase_comp$cluster_10 <- phase_comp$cluster_10  %>%  replace_na(0)#NAを0に置き換え
+phase_comp$cluster_11 <- phase_comp$cluster_11  %>%  replace_na(0)
+phase_col <-  c("#0066E7",
+    "#FFDA13",
+    "#D4070F"
+    )
+
+p <- phase_comp %>% 
+  mutate("phasetype" = c("G1", "G2M","S"),
+         fct.phase = factor(phasetype, levels = c("G1","S","G2M"))) %>% 
+  select(-c("phase","phasetype")) %>% pivot_longer(-fct.phase) %>% 
+  ggplot(aes(x = fct(name),y = value, fill = fct.phase))+
+  geom_col(position = "fill", 
+           color = "black")+
+  scale_fill_manual(values =  phase_col)+
+  theme_classic()+
+   theme(plot.background = element_blank(),
+        #panel.grid.minor = element_blank(),
+        #panel.grid.major = element_blank(),
+        panel.background = element_blank(),
+        #axis.line = element_blank(),
+        #axis.ticks = element_blank(),
+        strip.background = element_rect(fill = "white", colour = "white"),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        axis.text = element_text(colour = "black"),
+        legend.text = element_text(colour = "black"),
+        legend.title = element_blank(),
+        axis.title = element_blank())
+
+phase_comp %>% pivot_longer(-phase) %>% 
+  ggplot(aes(x = fct(name),y = value, fill = phase))+
+  geom_col(position = "fill", 
+           color = "black")+
+  scale_fill_manual(values =  phase_col)+
+  theme_classic()+
+   theme(plot.background = element_blank(),
+        #panel.grid.minor = element_blank(),
+        #panel.grid.major = element_blank(),
+        panel.background = element_blank(),
+        #axis.line = element_blank(),
+        #axis.ticks = element_blank(),
+        strip.background = element_rect(fill = "white", colour = "white"),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        axis.text = element_text(colour = "black"),
+        legend.text = element_text(colour = "black"),
+        legend.title = element_blank(),
+        axis.title = element_blank())
+  
+ggsave(paste0(Sys.Date(),"_phase_compotision.pdf"), p, dpi = 300, height = 2.5, width =3.5)
+#240226追記 G2MとSを誤って入れ替えてしまっていた。Fig中で手で直す。
+saveRDS(SeuratObj_REC_scrublet, "SeuratObj_T1KO.rds")
+
+
+SeuratObj_REC_scrublet_ccr <- SeuratObj_T1KO
+SeuratObj_REC_scrublet_ccr <- CellCycleScoring(SeuratObj_REC_scrublet_ccr, 
+                                               s.features   = UpdateSymbolList(symbols = cc.genes$s.genes), 
+                                               g2m.features = UpdateSymbolList(symbols = cc.genes$g2m.genes), set.ident = TRUE)
+
+SeuratObj_REC_scrublet_ccr$Phase <- factor(SeuratObj_REC_scrublet_ccr$Phase, levels = c("G1","S","G2M")) 
+p <- DimPlot(SeuratObj_REC_scrublet_ccr, reduction = "umap")+
+  scale_colour_manual(values = c("#FFDA13",#yellow
+                                 "#0066E7",#blue
+                        "#D4070F")) +#red
+  NoLegend()
+ggsave(paste0(Sys.Date(),"_phase_DimpPlot.tiff"), p, dpi = 300, height = 3.5, width = 3.5)
+write.table(phase_comp, "240226_CellCycle_phase_comp_T1KO.txt", row.names = F)
+```
+

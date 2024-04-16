@@ -1,0 +1,290 @@
+---
+title: "1_batch_correct_vivoACYK_c11_56_86_117_res0.8_5000HVGs_exp2in5cells"
+author: "Ryuta Yokogawa"
+date: "04/07/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "~/Library/CloudStorage/OneDrive-KyotoUniversity/10xanalysis/RMD for analysis/Murase_paper/Final")
+```
+
+## summary
+20221117 kojima data,Amander Clark data, vitro PGCLC dataの比較
+
+data: 
+cr601_GRCh38p12chrxmv2_20221222 
+Hs_in-vitro (NCLCN#261　d6c11, d6c56, d6c86, d6c117)
+Hs_in-vivo (AC7w, AC9w, AC10w, YK11w, AC13w, AC16w)
+
+
+#set up
+## load libraries
+
+```{r}
+filename<-"1_batch_correct_vivoACYK_c11_56_86_117_res0.8_5000HVGs_exp2in5cells"
+```
+
+```{r,message=FALSE,warning=FALSE}
+suppressPackageStartupMessages({
+
+library(Matrix) 
+library(batchelor)
+library(dendextend)
+library(scales)
+library(Seurat)
+library(SeuratWrappers) 
+library(tidyverse)
+library(gridExtra)
+library(ggplot2)
+library(ggrepel)
+library(dplyr)
+library(patchwork)
+library(tidyr)
+library(scales)
+library(reticulate)
+library(data.table)
+})
+set.seed(0)
+```
+
+```{r}
+use_condaenv(condaenv = "scrublet", required = TRUE) 
+packageVersion("Seurat")
+```
+
+# Input raw data 
+## read raw data
+
+```{r}
+vitro <-readRDS("~/Library/CloudStorage/OneDrive-KyotoUniversity/10xanalysis/RMD for analysis/Murase_paper/0_sample/0_vitro_c11_56_86_117_10k.rds")
+vivo <-readRDS("~/Library/CloudStorage/OneDrive-KyotoUniversity/10xanalysis/RMD for analysis/Murase_paper/0_sample/0_vivoACYK_10K.rds")
+```
+
+# dataからgermのみ抽出
+
+```{r}
+vivo <-subset(vivo,subset=seurat_clusters%in%c("10","14"))
+```
+
+# PGCLCとvivoのgermをmerge
+
+```{r}
+seurat <- merge(vitro, y = c(vivo))
+count <- seurat[["RNA"]]@counts %>% 
+  as.matrix()
+```
+
+```{r}
+data<-seurat[["RNA"]]@counts%>%
+  as.matrix() %>% 
+  t()
+screcode <- reticulate::import(module="screcode.screcode")
+recode<-screcode$RECODE()
+data_scRECODE <- recode$fit_transform(data)
+rownames(data_scRECODE)<-colnames(seurat)
+colnames(data_scRECODE)<-rownames(seurat)
+```
+
+```{r}
+seurat[["RNA"]]@counts<-data_scRECODE %>% 
+  t() %>% 
+  Matrix(sparse=TRUE)
+```
+
+### normalization
+
+normalize; scale.factor =100K for RECODE
+```{r}
+seurat <- NormalizeData(seurat, normazation.mathod ="LogNormalize", scale.factor=100000)
+Idents(seurat)<-seurat$orig.ident
+VlnPlot(seurat, features = "nCount_RNA",  pt.size=.1, y.max=100000, sort = c("c11", "c56","c86", "c117", "AC7w", "AC9w", "AC10w", "YK11w", "AC13w", "AC16w")) + theme(legend.position="right")
+```
+
+### Find features
+
+```{r}
+seurat <- FindVariableFeatures(seurat, selection.method = "vst", nfeatures = 5000)
+top10 <- head(VariableFeatures(seurat), 10)  # Identify the 10 most highly variable genes
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(seurat)
+LabelPoints(plot = plot1, points = top10, repel = TRUE)
+```
+
+```{r}
+n.top=5000 #Number of HVGs
+max=0 #Limit HVGs whose cluster average expression value is over max in at least one cluster
+mean=0
+n.cells=5
+```
+
+```{r,fig.width=3,fig.height=5}
+pdat<-seurat[["RNA"]]@meta.features
+pdat$max<-rowSums(seurat[["RNA"]]@data)
+pdat$n.cell<-rowSums(seurat[["RNA"]]@data>2)
+```
+
+```{r,fig.width=3,fig.height=5}
+SNPs_all<-rownames(pdat)[order(pdat$vst.variance.standardized,decreasing = TRUE)]
+genes<-intersect(SNPs_all,c(rownames(pdat)[pdat$vst.mean>=mean&pdat$n.cell>=n.cells])) %>% head(n.top)
+pdat$HVGs<-rownames(pdat)%in%genes
+```
+
+```{r}
+ggplot(pdat,aes(x=max))+
+  geom_histogram(binwidth = 5)+
+  xlim(0,500)
+```
+
+```{r}
+ggplot(pdat,aes(x=n.cell))+
+  geom_histogram(binwidth = 2)+
+  xlim(0,30)
+```
+
+```{r,fig.width=3,fig.height=5}
+ggplot(pdat,aes(x=vst.mean,y=vst.variance.standardized,color=HVGs))+
+  geom_point(show.legend = F)+
+  scale_x_log10()+
+  scale_color_manual(values=c("FALSE"="black","TRUE"="red"))+
+  ggtitle(paste0("DEGs (",length(genes),")"))+
+  theme_classic(base_size = 15)
+```
+
+### Data scaling
+
+```{r}
+all.genes <- rownames(seurat)
+seurat<- ScaleData(seurat, features = all.genes)
+```
+
+### FAST MNN
+
+```{r}
+seurat$batch<-factor(seurat$orig.ident,levels=c("c11","c56","c86","c117","AC7w","AC9w","AC10w","YK11w","AC13w","AC16w" ),labels=c("PGCLC","PGCLC","PGCLC","PGCLC","7W","9W","10W","11W","13W","16W"))
+seurat<-SplitObject(seurat, split.by = "batch")
+seurat<-lapply(seurat, DietSeurat)
+seurat<-RunFastMNN(object.list = seurat)
+```
+
+### reduciton and clustering
+
+FASTMNNはPCAのかわりなのでここではPCA不要
+```{r}
+seurat <- FindNeighbors(seurat, dims = 1:50, reduction = "mnn")
+seurat <- FindClusters(seurat, resolution = 0.8)#0.4-1.2推奨
+seurat <- RunUMAP(seurat, dims = 1:50, reduction = "mnn", seed.use=42)
+```
+
+### MNN Visualization {.tabset .tabset-fade}
+
+```{r}
+seurat$orig.ident <- factor(x = seurat$orig.ident, levels = c("c11", "c56", "c86", "c117", "AC7w", "AC9w", "AC10w", "YK11w", "AC13w", "AC16w"))
+```
+
+### MNN by original.indent & indent
+
+```{r,echo=FALSE,fig.width = 10, fig.height = 5, fig.margin=TRUE}
+DimPlot(seurat, reduction = "mnn", group.by = c("orig.ident", "ident"), ncol = 2, label=TRUE, label.size = 4,dims = c(1,2))
+```
+### UMAP Visualization {.tabset .tabset-fade}
+#### original.indent & indent
+
+```{r,echo=FALSE,fig.width = 10, fig.height = 5, fig.margin=TRUE}
+DimPlot(seurat, reduction = "umap", group.by = c("orig.ident", "ident"), ncol = 2, label=TRUE, label.size = 4, pt.size=0.5)
+```
+
+```{r,echo=FALSE,fig.width = 10, fig.height = 25, fig.margin=TRUE}
+DimPlot(seurat, reduction = "umap", split.by = "orig.ident", ncol = 2, label=TRUE, label.size = 4, pt.size=0.5)
+```
+
+
+### Feature Plot{.tabset .tabset-fade}
+#### Germ cells
+
+```{r,echo=FALSE,fig.width = 10, fig.height = 10, fig.margin=TRUE}
+FeaturePlot(seurat,reduction = "umap",
+                  features=c("DDX4","DAZL","SYCP3","GPX1"))
+```
+
+#### Early GCs
+
+```{r,echo=FALSE,fig.width = 20, fig.height = 15, fig.margin=TRUE}
+FeaturePlot(seurat,reduction = "umap",
+                  features=c("POU5F1","SOX2","NANOG","LIN28A","SALL4","TFAP2C", "SOX15", "SOX17", "PRDM1", "KIT", "PDPN", "TFCP2L1"))
+```
+
+#### Leptotene
+
+```{r,echo=FALSE,fig.width = 10, fig.height = 15, fig.margin=TRUE}
+FeaturePlot(seurat,reduction = "umap",
+                  features=c("ZGLP1","STRA8","REC8","ANHX","ASB9","BHMG1"))
+```
+
+#### Zygotene
+
+```{r,echo=FALSE,fig.width = 15, fig.height = 15, fig.margin=TRUE}
+FeaturePlot(seurat,reduction = "umap",
+                  features=c("PIWIL2","PIWIL4","TEX14","PRDM9","SPO11","SYCP2", "RAD51", "RAD51AP2"))
+```
+
+#### Pachytene
+
+```{r,echo=FALSE,fig.width = 10, fig.height = 15, fig.margin=TRUE}
+FeaturePlot(seurat,reduction = "umap",
+                  features=c("MAEL","TEX15","STK31","SYCP1","DMC1"))
+```
+
+#### Diplotene
+
+```{r,echo=FALSE,fig.width = 20, fig.height = 15, fig.margin=TRUE}
+FeaturePlot(seurat,reduction = "umap",
+                  features=c("TP63","ZP3","FIGLA","NOBOX","NLRP5","FOXO3", "GDF9", "WEE2", "ZP4", "KPNA7", "MVP", "JAG1"))
+```
+
+#### Granulosa cell
+
+```{r,echo=FALSE,fig.width = 15, fig.height = 15, fig.margin=TRUE}
+FeaturePlot(seurat,reduction = "umap",
+                  features=c("FOXL2","WT1","CYP17A1","ARX","AMH","INHA", "CYP19A1"))
+```
+
+## VlnPlot{.tabset .tabset-fade}
+
+```{r}
+markers <- list("Germ cells" =c("DDX4", "DAZL","SYCP3","GPX1"),
+                "Early GCs" = c("POU5F1", "SOX2", "NANOG", "LIN28A", "SALL4", "TFAP2C", "SOX15", "SOX17", "PRDM1", "KIT", "PDPN", "TFCP2L1"),
+                "Leptotene" = c("ZGLP1", "STRA8", "REC8", "ANHX", "ASB9", "BHMG1"),
+                "Zygotene" = c("PIWIL2", "PIWIL4", "TEX14", "PRDM9", "SPO11", "SYCP2", "RAD51", "RAD51AP2"),
+                "Pachytene" = c("MAEL", "TEX15", "STK31", "SYCP1", "DMC1" ),
+                "Diplotene" = c("TP63", "ZP3", "FIGLA", "NOBOX", "NLRP5", "FOXO3", "GDF9", "WEE2","ZP4", "KPNA7", "MVP", "JAG1"),
+                "Fuchou2017" = c("LMOD3", "RBM46", "NETO1", "OOSP2", "BOLL", "SOX13", "TDRD6", "SIX1", "CYP26A1", "CYP26B1", "RDH10", "IL13RA2", "PECAM1", "NANOG", "TFCP2L1", "KLF4", "LMOD3", "RBM46", "NETO1"),
+                "Granulosa cell" = c("FOXL2","WT1","CYP17A1","ARX","FOXL2","AMH","INHA","CYP19A1","CYP17A1"),
+                "Stromal cell" = c("TCF21","COL1A2","STAR"),
+                "smooth muscle cell" = c("DES","ACTA2","CDH5","CALD1","CNN1","HEXIM1","HH2R","H2R","MLNR","GPR38","TAGLN"),
+                "endothelial cell" = c("CDH5","VWF","PECAM1","ROBO4"),
+                "apoptosis" = c("CASP3","BCL2","BAX","SMAD4"),
+                "germ"=c("GATA2","GATA3","ID1","ID2","ID3","MSX1","MSX2","M1AP","HSPB11","SOX2","SOX13","SOX15","SOX17","KIT","KITLG","OOSP2","JAG1","SALL4","DPPA3","TDRD6","PIWIL2","SIX1","TEX12","TEX14","SPO11","WEE2","BOLL","RAD51AP2","RPS19","ZNF208","YBX1","ZNF791","HES6","MAEL","ZNF362","ZBTB11","HOXA5","HOXB6","HMGB3","PBX1","LHX8","NR4A2","ZNF382","MGA","RLF","ZIC4","PAXBP1","HSF2","DMRTA2","L3MBTL1","STAT1","TBX3","AFF1","JARID2", "NFKB2","NR3C2","THRA", "ASB9","ANHX","CYP26A1","CYP26B1","IL13RA2","PECAM1","NANOG","TFCP2L1","KLF4","BMP2","BMP4","GDF2","BMP10","DLL1","DLL4","DLL3","NOTCH1","NOTCH2","NOTCH3","HES1","HEY1","HEY2","HEYL","ACVRL1" ,"ACVR1","BMPR1A","BMPR1B","ACVR1B","ACVR1C","TGFBR1","TGFBR2","BMPR2","ACVR2A","ACVR2B","AMHR2","TGFBR3","TGFBR3L","GAPDH","PPIA","ESR1","ESR2","NR3C1","NR3C2","PGR","AR"),
+                "soma"=c("NR5A1","NR2F1","NR2F2","MAF","ESR2","HSD3B1", "HSD17B1","FST","LGR5","SERPINE2","AARD","AKR1C14","GNG13","KRT19","WNT4","RSPO1","KIT","KITLG","WT1","CYP19A1","BMP2", "BMP4","GDF2","BMP10","DLL1","DLL4","DLL3","NOTCH1","NOTCH2","NOTCH3","HES1","HEY1","HEY2","HEYL","ACVRL1","ACVR1","BMPR1A","BMPR1B","ACVR1B","ACVR1C","TGFBR1","TGFBR2","BMPR2","ACVR2A","ACVR2B","AMHR2","TGFBR3","TGFBR3L","GAPDH","PPIA"),
+                         "D-BPGs"=c("FOXL2","AARD","HSD17B1","SERPINE2","GATM","HSD3B1","INHA"),
+                         "Early-BPGs"=c("IGFBP5","CDKN1C","JUN"),
+                         "D-EPGs"=c("UPK3B","KRT19","GNG13","LGR5","IGFBP2","LHX9","ALDH1A2")) %>% lapply(function(x){
+                intersect(x,rownames(seurat))})
+```
+
+## FeaturePlot{.tabset .tabset-fade}
+### UMAP{.tabset .tabset-fade}
+
+```{r, echo=FALSE, results='asis'}
+reduction="umap"
+res <- lapply(names(markers), function(i) {
+  knitr::knit_child(
+    '~/Library/CloudStorage/OneDrive-KyotoUniversity/10xanalysis/Template/FeaturePlot.Rmd', envir = environment(), quiet = TRUE
+  )
+})
+cat(unlist(res), sep = '\n')
+```
+
+```{r}
+saveRDS(seurat,"~/Library/CloudStorage/OneDrive-KyotoUniversity/10xanalysis/RMD for analysis/Murase_paper/Final/1_batch_correct_vivoACYK_c11_56_86_117_res0.8_5000HVGs_exp2in5cells.rds")
+```

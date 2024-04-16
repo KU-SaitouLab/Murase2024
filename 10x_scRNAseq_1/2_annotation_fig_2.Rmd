@@ -1,0 +1,499 @@
+---
+title: "2_annotation_fig_2"
+author: "Ryuta Yokogawa"
+date: "03/26/2023"
+output: 
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "~/Library/CloudStorage/OneDrive-KyotoUniversity/10xanalysis/RMD for analysis/Murase_paper/Final")
+```
+
+# Set up
+
+```{r}
+filename<-"2_annotation_fig_2"
+orig.ident<-c("AC7w","AC9w","AC10w","YK11w","AC13w","AC16w","c11","c56","c86","c117")
+dataset<-c(rep("Hs_in-vivo",6), rep("Hs_in-vitro",4))
+mapping<-"cr601_GRCh38p12chrxmv2_20221222"
+```
+
+```{r}
+if(!dir.exists(filename)){
+    dir.create(filename)
+}
+```
+
+## Load libraries
+
+```{r,message=FALSE,warning=FALSE}
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(SeuratWrappers)
+  library(patchwork)
+  library(Seurat)
+  library(Matrix)
+  library(scales)
+  library(data.table)
+  library(gridExtra)
+  library(knitr)
+  library(scran)
+  library(scater)
+  library(pheatmap)
+  library(gplots)
+  library(RColorBrewer)
+})
+set.seed(0)
+```
+
+## Import data
+
+```{r}
+seurat <- readRDS("~/Library/CloudStorage/OneDrive-KyotoUniversity/10xanalysis/RMD for analysis/Murase_paper/Final/2_annotation_vivoACYK_c11_56_86_117_res0.8_5000HVGs_exp2in5cells.rds")
+```
+
+```{r}
+celltype_pal<-rep(c("#1F77B4","#FF7F0E"),6) %>% 
+  setNames(c("VEM_vivo", "VEM_vitro", "EM_vivo", "EM_vitro", "M_vivo", "M_vitro", "PL_vivo", "PL_vitro", "L_vivo", "L_vitro", "ZPD_vivo", "ZPD_vitro"))
+
+cluster_pal<-c(colorRampPalette(c("white","#008000"))(4)[4:3],
+                colorRampPalette(c("white","#005080"))(4)[4:3],
+                colorRampPalette(c("white","red"))(4)[4:2],
+                "gold",
+                "#b35900",
+                "#a020f0"
+                ) %>% 
+  setNames(c("VEM1","VEM2","EM1","EM2","M1","M2","M3","PLL1","PLL2","ZPD"))
+```
+
+```{r}
+theme_set(theme(text=element_text(size = 18),
+                panel.background = element_rect(fill = "white",color="gray20"),
+                panel.grid=element_line(color="gray92"),
+                legend.key = element_rect(colour = NA, fill = NA)))
+source("~/Library/CloudStorage/OneDrive-KyotoUniversity/10xanalysis/core_functions.R")
+```
+
+## vivo vs vitroのtemp.cluster作成
+```{r}
+seurat$tmp.cluster<-seurat$cluster %>% as.character()
+seurat$tmp.cluster<-gsub("[0-9]","",seurat$tmp.cluster)
+seurat$tmp.orig.ident<-ifelse(seurat$orig.ident%in%c("c11","c56","c86","c117"),"vitro","vivo")
+seurat$tmp.cluster<-paste0(seurat$tmp.cluster,"_",seurat$tmp.orig.ident) %>% 
+  factor(levels=paste0(rep(c("VEM","EM","M","PLL","ZPD"),each=2),"_",c("vivo","vitro")))
+ table(seurat$tmp.cluster) %>% addmargins()
+```
+
+```{r,fig.width=6,fig.height=5}
+DimPlot(seurat,group.by="cluster",label=FALSE)+
+  scale_color_manual(values=cluster_pal)
+```
+
+```{r,fig.width=5,fig.height=5}
+DimPlot(seurat,group.by="tmp.cluster",label=FALSE)+
+  scale_color_manual(values=celltype_pal)
+```
+
+## Pathway expression
+
+```{r,fig.width=6, fig.height=7}
+markers<-intersect(c("GATA2","ID2","BMPR1A","FZD7","FZD4","RNF43","HEY1","HES1","DLL1"),rownames(seurat)) 
+mat<-levels(seurat$cluster) %>% 
+  lapply(function(y){
+    if(y%in%seurat$cluster){
+      if (sum(seurat$cluster==y)>1){
+        seurat[["RNA"]]@data[markers,seurat$cluster==y] %>% 
+          rowMeans()
+        }else{
+          seurat[["RNA"]]@data[markers,seurat$cluster==y]
+        }
+      }else{
+          rep(NA,length(markers))
+      }
+  }) %>% do.call(cbind,.) %>% 
+  as.data.frame() %>% 
+  `colnames<-`(paste0(levels(seurat$cluster)))
+mat_col <- data.frame(cluster=levels(seurat$cluster) %>% factor(levels(seurat$cluster)),
+                      row.names = colnames(mat))
+col_pal = list(cluster = cluster_pal)
+breaksList = c(seq(0, 1.99, by = 0.01),seq(2, 5, by = 0.05))
+newnames <- lapply(
+  rownames(mat),
+  function(x) bquote(bolditalic(.(x))))
+
+pheatmap(mat,cluster_rows = F,cluster_cols = FALSE, 
+             color=colorRampPalette(rev(brewer.pal(n = 7, name = "RdYlBu")))(length(breaksList)),
+             breaks = breaksList,
+             annotation_col=mat_col,
+             annotation_colors = col_pal[1],
+             show_colnames = F, show_rownames=T,
+         labels_row = as.expression(newnames),
+         #gaps_col = ncol(mat)-2
+         )
+```
+
+## Marker expression [vivo vs vitro Figure]
+
+```{r,fig.width=6, fig.height=7}
+seurat$method<-ifelse(seurat$orig.ident%in%c("c11","c56","c86","c117"),"in vitro","in vivo") %>% 
+  factor(levels=c("in vivo","in vitro"))
+for (i in levels(seurat$method)){
+  seu<-subset(seurat,method==i)
+  mat<-levels(seu$cluster) %>% 
+  lapply(function(y){
+    if(y%in%seu$cluster){
+      if (sum(seu$cluster==y)>1){
+        seu[["RNA"]]@data[markers,seu$cluster==y] %>% 
+          rowMeans()
+        }else{
+          seu[["RNA"]]@data[markers,seu$cluster==y]
+        }
+      }else{
+          rep(NA,length(markers))
+      }
+  }) %>% do.call(cbind,.) %>% 
+  as.data.frame() %>% 
+  `colnames<-`(paste0(levels(seu$cluster)))
+mat_col <- data.frame(cluster=levels(seu$cluster) %>% factor(levels(seu$cluster)),
+                      row.names = colnames(mat))
+col_pal = list(cluster = cluster_pal)
+breaksList = c(seq(0, 1.99, by = 0.01),seq(2, 5, by = 0.05))
+newnames <- lapply(
+  rownames(mat),
+  function(x) bquote(bolditalic(.(x))))
+
+pheatmap(mat,cluster_rows = F,cluster_cols = FALSE, 
+             color=colorRampPalette(rev(brewer.pal(n = 7, name = "RdYlBu")))(length(breaksList)),
+             breaks = breaksList,
+             annotation_col=mat_col,
+             annotation_colors = col_pal[1],
+             show_colnames = F, show_rownames=T,
+         labels_row = as.expression(newnames),
+         #gaps_col = ncol(mat)-2,
+         main=i)
+}
+```
+
+```{r}
+dat<-seurat[["RNA"]]@data[markers,] %>% 
+  as.matrix() %>% 
+  t() %>% 
+  as.data.frame() %>% 
+  rownames_to_column(var="cells") %>% 
+  tidyr::pivot_longer(cols=-cells,names_to="genes",values_to="exp") %>% 
+  transform(genes=factor(genes,levels=markers))
+dat$cluster<-seurat@meta.data[dat$cells,"cluster"] %>% 
+  factor(levels=levels(.) )
+```
+
+```{r,fig.width=14,fig.height=20}
+p1<-ggplot(dat,aes(x=cluster,y=exp))+
+  geom_violin(aes(fill=cluster),scale="width")+
+  xlab("")+
+  ylab("")+
+  facet_wrap(genes~.,ncol=1, strip.position = "right")+
+  theme_bw()+
+  theme(panel.background = element_blank(),
+        panel.grid = element_line(color = "white"), 
+        strip.text.y = element_text(angle = 0,size=18, face="bold",hjust=0),
+        axis.text.x = element_text(size=18,angle=45,hjust=1, face="bold"),
+        strip.placement = "outside",
+        strip.background = element_blank(),
+        legend.position="none")+
+  scale_fill_manual(values=cluster_pal)
+p1
+```
+
+
+## Key gene BMP/WNT/NOTCH
+
+```{r,echo=FALSE,fig.width = 15, fig.height = 10, fig.margin=TRUE}
+rd_theme_italic2<-function(legend.position="none"){theme(axis.title=element_blank(),
+                                  axis.text=element_blank(),
+                                  axis.ticks=element_blank(),
+                                  panel.grid=element_blank(),
+                                  legend.position = legend.position,
+                                  panel.background = element_blank(),
+                                  panel.border = element_blank(),
+                                  axis.line = element_line(size=0.5),#element_blank(),
+                                  plot.title= element_text(face="bold.italic",size=20)
+)}
+
+markers<-c("GATA3","FZD7","HEY1",
+           "ID2","FZD4","HES1")
+p1<-FeaturePlot(object = seurat, features = markers, min.cutoff = "q9", pt.size = 0.5, ncol=3, reduction="umap",label=FALSE)&rd_theme_italic2(legend.position = "right")
+p1
+pdf(paste0(filename,"_supC.pdf"), width = 15, height = 10)
+p1
+dev.off()
+
+ggsave(p1,filename=paste0(filename,"_supC.png"),width=24,height=16)
+```
+
+
+```{r}
+mytheme<-function(){
+  theme_classic()+
+  theme(axis.line.x = element_line(size=1, color="black"),
+        axis.line.y = element_line(size=1, color="black"),
+        strip.text = element_text(size=30, face="bold"),
+        axis.title = element_text(size=22,face="bold"),
+        axis.text.x = element_text(size=15, color="black"),
+        axis.text.y = element_text(size=15, color="black"),
+        plot.title = element_text(size=18),
+        legend.text=element_text(size=17, color="black"),
+        legend.title=element_text(size=19, color="black"),
+        panel.grid.minor.x = element_blank(), 
+        panel.grid.minor.y = element_blank(),
+        panel.grid.major.x = element_blank(), panel.grid.major.y = element_blank(),
+        panel.background = element_rect(fill='white'),
+        strip.background = element_blank()
+        )
+}
+```
+
+
+## Key pathway gene expression{.tabset .tabset-fade}
+### GATA3
+
+```{r}
+gene<-"GATA3"
+pdat<-seurat@meta.data %>% 
+  cbind(exp=seurat[["RNA"]]@data[gene,])
+pdat<-filter(pdat,(method=="in vivo" & cluster =="PL1")==FALSE)
+```
+
+```{r,fig.width=16,fig.height=12}
+p1<-ggplot(pdat,aes(x=cluster,y=exp,fill=cluster))+
+  geom_boxplot(show.legend = F,size=0.5,outlier.size = 0.3,outlier.alpha = 0.5,fatten = 1.4,width=0.4)+
+  xlab("")+
+  ylab("GATA3\nexpression")+
+ 
+  scale_color_gradient(low="lightgray",high="blue")+
+  mytheme()+
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5,face="bold",size=20))+
+  scale_fill_manual(values=cluster_pal)+
+  facet_wrap(~orig.ident,ncol=4, scales = "free")+
+  scale_x_discrete(limits=levels(seurat$cluster))+
+  ylim(0, max(pdat$exp))
+p1
+pdf(paste0(filename,"_supGATA3.pdf"), width = 20, height = 15)
+p1
+```
+
+### ID2
+
+```{r}
+gene<-"ID2"
+pdat<-seurat@meta.data %>% 
+  cbind(exp=seurat[["RNA"]]@data[gene,])
+pdat<-filter(pdat,(method=="in vivo" & cluster =="PL1")==FALSE)
+```
+
+```{r,fig.width=16,fig.height=12}
+p1<-ggplot(pdat,aes(x=cluster,y=exp,fill=cluster))+
+  geom_boxplot(show.legend = F,size=0.5,outlier.size = 0.3,outlier.alpha = 0.5,fatten = 1.4,width=0.4)+
+  xlab("")+
+  ylab("ID2\nexpression")+
+ 
+  scale_color_gradient(low="lightgray",high="blue")+
+  mytheme()+
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5,face="bold",size=20))+
+  scale_fill_manual(values=cluster_pal)+
+  facet_wrap(~orig.ident,ncol=4, scales = "free")+
+  scale_x_discrete(limits=levels(seurat$cluster))+
+  ylim(0, max(pdat$exp))
+p1
+pdf(paste0(filename,"_supID2.pdf"), width = 20, height = 15)
+p1
+```
+
+### BMPR1A
+
+```{r}
+gene<-"BMPR1A"
+pdat<-seurat@meta.data %>% 
+  cbind(exp=seurat[["RNA"]]@data[gene,])
+pdat<-filter(pdat,(method=="in vivo" & cluster =="PL1")==FALSE)
+```
+
+```{r,fig.width=16,fig.height=12}
+p1<-ggplot(pdat,aes(x=cluster,y=exp,fill=cluster))+
+  geom_boxplot(show.legend = F,size=0.5,outlier.size = 0.3,outlier.alpha = 0.5,fatten = 1.4,width=0.4)+
+  xlab("")+
+  ylab("BMPR1A\nexpression")+
+ 
+  scale_color_gradient(low="lightgray",high="blue")+
+  mytheme()+
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5,face="bold",size=20))+
+  scale_fill_manual(values=cluster_pal)+
+  facet_wrap(~orig.ident,ncol=4, scales = "free")+
+  scale_x_discrete(limits=levels(seurat$cluster))+
+  ylim(0, max(pdat$exp))
+p1
+pdf(paste0(filename,"_supBMPR1A.pdf"), width = 20, height = 15)
+p1
+```
+
+### FZD7
+```{r}
+gene<-"FZD7"
+pdat<-seurat@meta.data %>% 
+  cbind(exp=seurat[["RNA"]]@data[gene,])
+pdat<-filter(pdat,(method=="in vivo" & cluster =="PL1")==FALSE)
+```
+
+```{r,fig.width=16,fig.height=12}
+p1<-ggplot(pdat,aes(x=cluster,y=exp,fill=cluster))+
+  geom_boxplot(show.legend = F,size=0.5,outlier.size = 0.3,outlier.alpha = 0.5,fatten = 1.4,width=0.4)+
+  xlab("")+
+  ylab("FZD7\nexpression")+
+ 
+  scale_color_gradient(low="lightgray",high="blue")+
+  mytheme()+
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5,face="bold",size=20))+
+  scale_fill_manual(values=cluster_pal)+
+  facet_wrap(~orig.ident,ncol=4, scales = "free")+
+  scale_x_discrete(limits=levels(seurat$cluster))+
+  ylim(0, max(pdat$exp))
+p1
+pdf(paste0(filename,"_supFZD7.pdf"), width = 20, height = 15)
+p1
+```
+
+### FZD4
+
+```{r}
+gene<-"FZD4"
+pdat<-seurat@meta.data %>% 
+  cbind(exp=seurat[["RNA"]]@data[gene,])
+pdat<-filter(pdat,(method=="in vivo" & cluster =="PL1")==FALSE)
+```
+
+```{r,fig.width=16,fig.height=12}
+p1<-ggplot(pdat,aes(x=cluster,y=exp,fill=cluster))+
+  geom_boxplot(show.legend = F,size=0.5,outlier.size = 0.3,outlier.alpha = 0.5,fatten = 1.4,width=0.4)+
+  xlab("")+
+  ylab("FZD4\nexpression")+
+ 
+  scale_color_gradient(low="lightgray",high="blue")+
+  mytheme()+
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5,face="bold",size=20))+
+  scale_fill_manual(values=cluster_pal)+
+  facet_wrap(~orig.ident,ncol=4, scales = "free")+
+  scale_x_discrete(limits=levels(seurat$cluster))+
+  ylim(0, max(pdat$exp))
+p1
+pdf(paste0(filename,"_supFZD4.pdf"), width = 20, height = 15)
+p1
+```
+
+### RNF43
+
+```{r}
+gene<-"RNF43"
+pdat<-seurat@meta.data %>% 
+  cbind(exp=seurat[["RNA"]]@data[gene,])
+pdat<-filter(pdat,(method=="in vivo" & cluster =="PL1")==FALSE)
+```
+
+```{r,fig.width=16,fig.height=12}
+p1<-ggplot(pdat,aes(x=cluster,y=exp,fill=cluster))+
+  geom_boxplot(show.legend = F,size=0.5,outlier.size = 0.3,outlier.alpha = 0.5,fatten = 1.4,width=0.4)+
+  xlab("")+
+  ylab("RNF43\nexpression")+
+ 
+  scale_color_gradient(low="lightgray",high="blue")+
+  mytheme()+
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5,face="bold",size=20))+
+  scale_fill_manual(values=cluster_pal)+
+  facet_wrap(~orig.ident,ncol=4, scales = "free")+
+  scale_x_discrete(limits=levels(seurat$cluster))+
+  ylim(0, max(pdat$exp))
+p1
+pdf(paste0(filename,"_supRNF43.pdf"), width = 20, height = 15)
+p1
+```
+
+### HEY1
+
+```{r}
+gene<-"HEY1"
+pdat<-seurat@meta.data %>% 
+  cbind(exp=seurat[["RNA"]]@data[gene,])
+pdat<-filter(pdat,(method=="in vivo" & cluster =="PL1")==FALSE)
+```
+
+```{r,fig.width=16,fig.height=12}
+p1<-ggplot(pdat,aes(x=cluster,y=exp,fill=cluster))+
+  geom_boxplot(show.legend = F,size=0.5,outlier.size = 0.3,outlier.alpha = 0.5,fatten = 1.4,width=0.4)+
+  xlab("")+
+  ylab("HEY1\nexpression")+
+ 
+  scale_color_gradient(low="lightgray",high="blue")+
+  mytheme()+
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5,face="bold",size=20))+
+  scale_fill_manual(values=cluster_pal)+
+  facet_wrap(~orig.ident,ncol=4, scales = "free")+
+  scale_x_discrete(limits=levels(seurat$cluster))+
+  ylim(0, max(pdat$exp))
+p1
+pdf(paste0(filename,"_supHEY1.pdf"), width = 20, height = 15)
+p1
+```
+
+### HES1
+
+```{r}
+gene<-"HES1"
+pdat<-seurat@meta.data %>% 
+  cbind(exp=seurat[["RNA"]]@data[gene,])
+pdat<-filter(pdat,(method=="in vivo" & cluster =="PL1")==FALSE)
+```
+
+```{r,fig.width=16,fig.height=12}
+p1<-ggplot(pdat,aes(x=cluster,y=exp,fill=cluster))+
+  geom_boxplot(show.legend = F,size=0.5,outlier.size = 0.3,outlier.alpha = 0.5,fatten = 1.4,width=0.4)+
+  xlab("")+
+  ylab("HES1\nexpression")+
+ 
+  scale_color_gradient(low="lightgray",high="blue")+
+  mytheme()+
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5,face="bold",size=20))+
+  scale_fill_manual(values=cluster_pal)+
+  facet_wrap(~orig.ident,ncol=4, scales = "free")+
+  scale_x_discrete(limits=levels(seurat$cluster))+
+  ylim(0, max(pdat$exp))
+p1
+pdf(paste0(filename,"_supHES1.pdf"), width = 20, height = 15)
+p1
+```
+
+### DLL1
+
+```{r}
+gene<-"DLL1"
+pdat<-seurat@meta.data %>% 
+  cbind(exp=seurat[["RNA"]]@data[gene,])
+pdat<-filter(pdat,(method=="in vivo" & cluster =="PL1")==FALSE)
+```
+
+```{r,fig.width=16,fig.height=12}
+p1<-ggplot(pdat,aes(x=cluster,y=exp,fill=cluster))+
+  geom_boxplot(show.legend = F,size=0.5,outlier.size = 0.3,outlier.alpha = 0.5,fatten = 1.4,width=0.4)+
+  xlab("")+
+  ylab("DLL1\nexpression")+
+ 
+  scale_color_gradient(low="lightgray",high="blue")+
+  mytheme()+
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5,face="bold",size=20))+
+  scale_fill_manual(values=cluster_pal)+
+  facet_wrap(~orig.ident,ncol=4, scales = "free")+
+  scale_x_discrete(limits=levels(seurat$cluster))+
+  ylim(0, max(pdat$exp))
+p1
+pdf(paste0(filename,"_supDLL1.pdf"), width = 20, height = 15)
+p1
+```

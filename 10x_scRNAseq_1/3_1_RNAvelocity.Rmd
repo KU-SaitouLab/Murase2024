@@ -1,0 +1,102 @@
+---
+title: '3_1_RNAvelocity'
+author: "Ryuta　Yokogawa"
+output:
+  html_document:
+    number_sections: yes
+    toc: true
+    toc_float: true
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "~/Library/CloudStorage/OneDrive-KyotoUniversity/10xanalysis/RMD for analysis/Murase_paper/Final")
+```
+
+data: 
+
+Hs_in-vivo (AC7w,AC9w,AC10w,YK11w,AC13w,AC16w)
+Hs_in-vitro (c11,c86,c117)
+
+# Set up
+```{r}
+filename<-"3_1_RNAvelocity"
+sample<-c("AC7w","AC9w","AC10w","YK11w","AC13w","AC16w","c11","c56","c86","c117")
+dataset<-c(rep("Hs_in-vivo",6), rep("Hs_in-vitro",4))
+mapping<-"cr601_GRCh38p12chrxmv2_20221222"
+```
+
+## Load libraries
+
+```{r}
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(SeuratWrappers)
+  library(patchwork)
+  library(Seurat)
+  library(plotly)
+  library(Matrix)
+  library(data.table)
+  library(gridExtra)
+  library(scran)
+  library(scater)
+  library(knitr)
+  library(reticulate)
+})
+set.seed(0)
+```
+
+```{r}
+use_condaenv(condaenv = "scrublet", required = TRUE) 
+packageVersion("Seurat")
+```
+
+```{r}
+theme_set(theme(text=element_text(size = 18),
+                panel.background = element_rect(fill = "white",color="gray20"),
+                panel.grid=element_line(color="gray92"),
+                legend.key = element_rect(colour = NA, fill = NA)))
+source("~/Library/CloudStorage/OneDrive-KyotoUniversity/10xanalysis/core_functions.R")
+```
+
+```{r}
+seurat<-readRDS("~/Library/CloudStorage/OneDrive-KyotoUniversity/10xanalysis/RMD for analysis/Murase_paper/Final/2_annotation_vivoACYK_c11_56_86_117_res0.8_5000HVGs_exp2in5cells.rds")
+seurat_e<-1:length(sample) %>%
+  lapply(function(x){
+    ds<-dataset[x]
+    sp<-sample[x]
+    if(ds=="Hs_in-vivo"){
+      Read10X(paste0("~/Library/CloudStorage/OneDrive-KyotoUniversity/10xanalysis/raw_data/",mapping,"/",ds,"/",sp,"/exon/filtered_feature_bc_matrix")) %>%
+        `colnames<-`(paste0(sp,"_",colnames(.)))
+    }else{
+      Read10X(paste0("~/Library/CloudStorage/OneDrive-KyotoUniversity/10xanalysis/raw_data/",mapping,"/",ds,"/",sp,"/exon/sample_feature_bc_matrix"))$`Gene Expression`        %>%
+        `colnames<-`(paste0(sp,"_",colnames(.)))
+    }
+})  %>% 
+  Reduce(Matrix::cbind2, .)
+seurat_i<-1:length(sample) %>%
+  lapply(function(x){
+    ds<-dataset[x]
+    sp<-sample[x]
+    if(ds=="Hs_in-vivo"){
+      Read10X(paste0("~/Library/CloudStorage/OneDrive-KyotoUniversity/10xanalysis/raw_data/",mapping,"/",ds,"/",sp,"/include-intron/raw_feature_bc_matrix")) %>% 
+    `colnames<-`(paste0(sp,"_",colnames(.)))
+    }else{
+      Read10X(paste0("~/Library/CloudStorage/OneDrive-KyotoUniversity/10xanalysis/raw_data/",mapping,"/",ds,"/",sp,"/include-intron/raw_feature_bc_matrix"))$`Gene Expression`  %>% 
+    `colnames<-`(paste0(sp,"_",colnames(.)))
+    }
+})  %>% 
+  Reduce(Matrix::cbind2, .)
+rownames(seurat_e)<-gsub("_","-",rownames(seurat_e))
+rownames(seurat_i)<-gsub("_","-",rownames(seurat_i))
+seurat_i<-seurat_i[rownames(seurat),colnames(seurat)]-seurat_e[rownames(seurat),colnames(seurat)]
+seurat_i[seurat_i<0]<-0
+seurat_i<-Matrix(seurat_i,sparse=T)
+
+seurat[["spliced"]] <- CreateAssayObject(counts = seurat_e[rownames(seurat),colnames(seurat)])
+seurat[["unspliced"]] <- CreateAssayObject(counts = seurat_i[rownames(seurat),colnames(seurat)])
+```
+
+```{r}
+saveRDS(seurat,paste0(filename,".rds"))
+```

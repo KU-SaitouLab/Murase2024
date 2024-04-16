@@ -1,0 +1,501 @@
+---
+title: 'Allele usage (10X)'
+output:
+  html_document:
+    number_sections: yes
+    toc: true
+    toc_float: true
+    code_folding: show
+---
+
+data: 
+
+Hs_in-vitro (NCLCN#261　d6c11, d6c56, d6c86, d6c117)
+Hs_in-vivo (AC7w, AC9w, AC10w, YK11w, AC13w, AC16w)
+
+# Set up
+```{r}
+filename<-"10X_allele_usage"
+sample<-c("d6c11", "d6c56", "d6c86", "d6c117")
+genome<-c(rep("NCLCN",4))
+cellline<-c(rep("NCLCN #261",4))
+dataset<-"Hs_expansion"
+ref<-"GRCh38p12_chrxm_v2_cr601"
+path=c("MS358_D11_cr60GRCh38p12chrxmv2intron_SNP",
+       "MS385_E05_cr60GRCh38p12chrxmv2intron_SNP",
+       "MS358_D11_cr60GRCh38p12chrxmv2intron_SNP",
+       "MS358_D11_cr60GRCh38p12chrxmv2intron_SNP")
+```
+
+```{r}
+count_thres<-3 # Include genes expressed at 5 UMI/sample or more in the analysis
+allele_thres<-2 # If expressed from both alleles totaling 3 UMI/cell or more, use the locus to determine if it is biallelic or monoallelic
+```
+
+```{r}
+if(!dir.exists(filename)){
+    dir.create(filename)
+}
+```
+
+## Load libraries
+
+```{r,message=FALSE,warning=FALSE}
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(SeuratWrappers)
+  library(patchwork)
+  library(Seurat)
+  library(Matrix)
+  library(scales)
+  library(data.table)
+  library(gridExtra)
+  library(knitr)
+  library(scran)
+  library(scater)
+  library(pheatmap)
+  library(gplots)
+  library(RColorBrewer)
+  library(ComplexHeatmap)
+  library(ggrepel)
+})
+set.seed(0)
+```
+
+```{r}
+germ_pal<-c(colorRampPalette(c("white","#008000"))(4)[4:3],
+                colorRampPalette(c("white","#005080"))(4)[4:3],
+                colorRampPalette(c("white","red"))(4)[4:2],
+                "gold",
+                "#b35900",
+                "#a020f0"
+                ) %>% 
+  setNames(c("VEM1","VEM2","EM1","EM2","M1","M2","M3","PLL1","PLL2","ZPD"))
+
+germ2_pal<-c(colorRampPalette(c("white","#008000"))(3)[2],
+             colorRampPalette(c("white","#005080"))(3)[2],
+             colorRampPalette(c("white","red2"))(3)[2],
+             "gold",
+             "#a020f0") %>% 
+  setNames(c("VEM","EM","M","PLL","ZPD"))
+```
+
+```{r}
+theme_set(theme(text=element_text(size = 18),
+                panel.background = element_rect(fill = "white",color="gray20"),
+                panel.grid=element_line(color="gray92"),
+                legend.key = element_rect(colour = NA, fill = NA)))
+source("~/ovaries/10X/analysis/core_functions.R")
+```
+
+
+```{r,fig.width=6,fig.height=5}
+annot <- readRDS("2_annotation_vivoACYK_c11_56_86_117_res0.8_5000HVGs_exp2in5cells.rds")
+annot <- subset(annot,method=="in vitro")
+annot$sample<-annot$orig.ident
+annot$cluster2<-annot$cluster %>% 
+  as.character() %>% 
+  factor(levels=c("VEM1", "VEM2", "EM1", "EM2", "M1", "M2", "M3", "PLL1", "PLL2", "ZPD"),
+         labels=c("VEM", "VEM", "EM", "EM", "M", "M", "M", "PLL", "PLL", "ZPD"))
+annot$cellline<-factor(annot$orig.ident,labels=cellline)
+
+DimPlot(annot,group.by="cluster")+
+  scale_color_manual(values=germ_pal)
+
+DimPlot(annot,group.by="cluster2")+
+  scale_color_manual(values=germ2_pal)
+```
+
+# Analysis
+## Allele usage
+
+```{r}
+chrX_gtf<-fread("~/chrX/2022-02-26/index/GRCh38p12_chrxm_v3_cr601/chrX.gtf",data.table=FALSE) %>% 
+  `colnames<-`(c("chr","start","end","gene")) %>% 
+  transform(start=start+1) %>% 
+  column_to_rownames(var="gene")
+phasing<-fread("~/chrX/2022-02-26/index/Nanopore/GRCh38p12_chrxm_v3_cr601_genes_chrX_phased_NCLCN.bed",data.table=FALSE) %>% 
+  mutate(band=paste0(V1,",",V6,",",V7)) %>% 
+  select(c(band,V4,V9)) %>% 
+  `colnames<-`(c("band","gene","state"))
+dup_genes<-phasing$gene[duplicated(phasing$gene)]
+dup_genes
+```
+
+
+```{r}
+seu_list<-1:4 %>% 
+  lapply(function(id){
+    sp=sample[id]
+    genome1<-Read10X_h5(paste0("~/chrX/2022-02-26/raw_data/",path[id],"/",sample[id],"/genome1/raw_feature_bc_matrix.h5")) %>% 
+      `colnames<-`(paste0(gsub("d6|d8","",sp),"_",colnames(.)))
+    genome2<-Read10X_h5(paste0("~/chrX/2022-02-26/raw_data/",path[id],"/",sample[id],"/genome2/raw_feature_bc_matrix.h5")) %>% 
+      `colnames<-`(paste0(gsub("d6|d8","",sp),"_",colnames(.)))
+    
+    cells<-intersect(colnames(genome1),colnames(genome2)) %>% 
+      intersect(colnames(annot))
+    genome1<-genome1[,cells]
+    genome2<-genome2[,cells]
+    
+    phasing[phasing$gene%in%dup_genes,]
+    phasing<-phasing[phasing$gene%in%dup_genes==FALSE,]
+    
+    Xa=rbind(genome1[phasing$gene[phasing$state=="Xa/Xi"],],genome2[phasing$gene[phasing$state=="Xi/Xa"],])
+    Xi=rbind(genome2[phasing$gene[phasing$state=="Xa/Xi"],],genome1[phasing$gene[phasing$state=="Xi/Xa"],])
+    
+    seurat<-CreateSeuratObject(Xa[,cells],assay = "Xi")
+    seurat[["Xa"]]<-CreateAssayObject(Xi[,cells])
+    
+    seurat$sample<-annot@meta.data[colnames(seurat),"sample"]
+    seurat$cluster<-annot@meta.data[colnames(seurat),"cluster"]
+    seurat$cluster2<-annot@meta.data[colnames(seurat),"cluster2"]
+    seurat$cellline<-annot@meta.data[colnames(seurat),"cellline"]
+    return(seurat)
+  })
+seurat<-merge(seu_list[[1]],c(seu_list[[2]],seu_list[[3]],seu_list[[4]]))
+seurat$sample<-factor(seurat$sample,levels=gsub("d6|d8","",sample))
+seurat$cluster<-factor(seurat$cluster,levels=levels(annot$cluster))
+seurat$cluster2<-factor(seurat$cluster2,levels=levels(annot$cluster2))
+seurat$cellline<-factor(seurat$cellline,levels=levels(annot$cellline))
+```
+
+```{r}
+pdat<-data.frame(Xa=rowSums(seurat[["Xa"]]@counts),
+                 Xi=rowSums(seurat[["Xi"]]@counts))
+variant<-rownames(pdat)[pdat$Xa>=count_thres|pdat$Xi>=count_thres]
+pdat$selected<-rownames(seurat)%in%variant
+
+ggplot(pdat,aes(x=Xa,y=Xi,color=selected))+
+  geom_point()+
+  scale_x_log10()+
+  scale_y_log10()+
+  geom_vline(xintercept = count_thres)+
+  geom_hline(yintercept = count_thres)+
+  coord_equal(xlim=c(1,50000),ratio=1)+
+  scale_color_manual(values=c("TRUE"="red",
+                              "FALSE"="gray"))+
+  ggtitle(paste0("Genes (",sum(pdat$selected)," / ",nrow(pdat),")"))
+```
+
+```{r}
+count_Xa<-seurat[["Xa"]]@counts[variant,] %>% as.matrix()
+count_Xi<-seurat[["Xi"]]@counts[variant,] %>% as.matrix()
+Xa_ratio<-(count_Xa/(count_Xa+count_Xi))
+Xa_ratio[(count_Xa+count_Xi)<=allele_thres]<-NaN
+```
+
+```{r}
+# Escapeeを定義する
+escapee_list<-levels(seurat$cellline) %>% 
+  setNames(.,.) %>% 
+  lapply(function(cline){
+    cl="VEM"
+    cells<-colnames(seurat)[seurat$cellline==cline&seurat$cluster2==cl]
+    dat<-data.frame(
+        #sample=sp,
+        cluster=cl,
+        gene=rownames(Xa_ratio),
+        location=chrX_gtf[rownames(Xa_ratio),"start"],
+        allele_usage=Xa_ratio[,cells,drop=FALSE] %>% rowMeans(na.rm=TRUE),
+        nCell=rowSums(count_Xa[,cells]+count_Xi[,cells]>2)
+      )
+    escapee<-dat$gene[dat$allele_usage<0.9]
+    # escapee<-intersect(escapee,variant_inter)
+    return(escapee[!is.na(escapee)])
+  })
+```
+
+```{r}
+# Calculate allele usage per cluster
+temp<-unique(seurat$sample) %>% 
+  lapply(function(sp){
+    cluster<-levels(seurat$cluster2)
+    lapply(cluster,function(cl){
+      cells<-colnames(seurat)[seurat$sample==sp&seurat$cluster2==cl]
+      if (length(cells)>2){
+      data.frame(
+        sample=sp,
+        cluster=cl,
+        gene=rownames(Xa_ratio),
+        location=chrX_gtf[rownames(Xa_ratio),"start"],
+        allele_usage=Xa_ratio[,cells,drop=FALSE] %>% rowMeans(na.rm=TRUE),
+        nCell=rowSums(count_Xa[,cells]+count_Xi[,cells]>2)
+      )}
+    }) %>% do.call(rbind,.)
+  }) %>% do.call(rbind,.)
+temp<-temp %>% 
+  mutate(id=paste0(sample,".",cluster)) %>% 
+  tidyr::pivot_wider(names_from = id,values_from = allele_usage,id_cols = gene) %>% 
+  mutate(location=chrX_gtf[.$gene,"start"])
+
+# Escapeeを定義する(VEM)
+escapee_df<-levels(seurat$cellline) %>% 
+  setNames(.,.) %>% 
+  lapply(function(cline){
+    cl="VEM"
+    cells<-colnames(seurat)[seurat$cellline==cline&seurat$cluster2==cl]
+    dat<-data.frame(
+        #sample=sp,
+        cluster=cl,
+        gene=rownames(Xa_ratio),
+        location=chrX_gtf[rownames(Xa_ratio),"start"],
+        allele_usage=Xa_ratio[,cells,drop=FALSE] %>% rowMeans(na.rm=TRUE),
+        nCell=rowSums(count_Xa[,cells]+count_Xi[,cells]>2)
+      ) %>% 
+      mutate(gene.type=ifelse(is.na(.$allele_usage),"Undetected",
+                              ifelse(.$allele_usage<0.9,"Escapee","Non-escapee")))
+    return(dat[,"gene.type"])
+  }) %>% 
+  do.call(cbind,.) %>% 
+  as.data.frame() %>% 
+  mutate(Gene=rownames(Xa_ratio))
+escapee_df<-escapee_df[,c("Gene",levels(seurat$cellline))]
+
+# Escapeeを定義する(Later than VEM)
+escapee_df_later<-levels(seurat$sample) %>% 
+  setNames(.,.) %>% 
+  lapply(function(sp){
+    cl="VEM"
+    cells<-colnames(seurat)[seurat$sample==sp&seurat$cluster2!=cl]
+    dat<-data.frame(
+        sample=sp,
+        cluster="Later than VEM",
+        gene=rownames(Xa_ratio),
+        location=chrX_gtf[rownames(Xa_ratio),"start"],
+        allele_usage=Xa_ratio[,cells,drop=FALSE] %>% rowMeans(na.rm=TRUE),
+        nCell=rowSums(count_Xa[,cells]+count_Xi[,cells]>2)
+      ) %>% 
+      mutate(gene.type=ifelse(is.na(.$allele_usage),"Undetected",
+                              ifelse(.$allele_usage<0.9,"Escapee","Non-escapee")))
+    return(dat[,"gene.type"])
+  }) %>% 
+  do.call(cbind,.) %>% 
+  as.data.frame() %>% 
+  mutate(Gene=rownames(Xa_ratio))
+escapee_df_later<-escapee_df_later[,c("Gene",levels(seurat$sample))]
+
+# VEMでnon-escapeeでVEM以降でescapeeとなる遺伝子
+escapee_df_dif<-escapee_df_later
+for (i in 1:length(sample)){
+  sp<-gsub("d6|d8","",sample[i])
+  cline<-cellline[i]
+  escapee_df_dif[,sp]<-paste0(escapee_df[,cline],">",escapee_df_later[,sp]) %>% 
+    factor(levels=c("Non-escapee>Non-escapee", "Undetected>Undetected", "Non-escapee>Undetected", "Escapee>Undetected", "Undetected>Escapee", "Non-escapee>Escapee", "Undetected>Non-escapee", "Escapee>Escapee", "Escapee>Non-escapee"),
+           labels=c("N>N", "U>U", "N>U", "E>U", "U>E", "N>E", "U>N", "E>E", "E>N"))
+}
+
+fwrite(escapee_df,paste0(filename,"/escapee_VEM.csv"),row.names = FALSE)
+fwrite(temp,paste0(filename,"/allele_usage.csv"),row.names = FALSE)
+fwrite(escapee_df_dif,paste0(filename,"/escapee_dif_VEM_later.csv"),row.names = FALSE)
+```
+
+```{r}
+pdat<-unique(seurat$sample) %>% 
+  lapply(function(sp){
+    sp<-gsub("d6|d8","",sp)
+    cluster<-unique(seurat$cluster2[seurat$sample==sp])
+    lapply(cluster,function(cl){
+      cells<-colnames(seurat)[seurat$sample==sp&seurat$cluster2==cl]
+      if(length(cells)>5){
+      data.frame(
+        sample=sp,
+        cluster=cl,
+        gene=rownames(Xa_ratio),
+        location=chrX_gtf[rownames(Xa_ratio),"start"],
+        allele_usage=Xa_ratio[,cells,drop=FALSE] %>% rowMeans(na.rm=TRUE),
+        nCell=rowSums(count_Xa[,cells]+count_Xi[,cells]>2)
+      )}
+    }) %>% do.call(rbind,.)
+  }) %>% do.call(rbind,.)
+```
+
+```{r,fig.width=12,fig.height=5}
+pdat_sub<-filter(pdat,cluster=="VEM"&allele_usage<0.9)
+escapee=pdat_sub$gene %>% unique()
+pdat$escapee=pdat$gene%in%escapee
+ggplot(pdat,aes(x=location/10^6,y=allele_usage*100,color=escapee))+
+  geom_point(show.legend = FALSE)+
+  geom_text_repel(pdat_sub,mapping=aes(x=location/10^6,y=allele_usage*100,label=gene),size=3,inherit.aes = FALSE)+
+  facet_grid(cluster~sample)+
+  geom_vline(xintercept=73820650/10^6)+
+  geom_hline(yintercept=50,linetype=2)+
+  scale_y_continuous(breaks=c(0,50,100))+
+  ylab("Xa allele usage")+
+  xlab("Chr. X location (Mb)")+
+  scale_color_manual(values=c("TRUE"="red",
+                              "FALSE"="gray"))
+```
+
+```{r,fig.width=12,fig.height=5}
+pdat$nCell_d<-ifelse(pdat$nCell<3,"<3",
+                    ifelse(pdat$nCell<5,"<5",
+                           ifelse(pdat$nCell<10,"<10",
+                                  ifelse(pdat$nCell<20,"<20",
+                                         ifelse(pdat$nCell<50,"<50",">=50"))))) %>% 
+  factor(levels=c("<3","<5","<10","<20","<50",">=50"))
+ggplot(pdat,aes(x=location/10^6,y=allele_usage*100,color=nCell_d))+
+  geom_point()+
+  #geom_text_repel(pdat_sub,mapping=aes(x=location,y=allele_usage,label=gene),inherit.aes = FALSE)+
+  facet_grid(cluster~sample)+
+  geom_vline(xintercept=73820650/10^6)+
+  scale_y_continuous(breaks=c(0,50,100))+
+  geom_hline(yintercept=50,linetype=2)+
+  ylab("Xa allele usage")+
+  xlab("Chr. X location (Mb)")+
+  scale_y_continuous(breaks=c(0,50,100),limits=c(0,100))+
+  scale_color_viridis_d()
+```
+
+```{r}
+mytheme<-function(x){
+  theme(axis.line.x = element_line(size=1, color="black"),
+        axis.line.y = element_line(size=1, color="black"),
+        axis.title.y = element_text(size=22,face="bold",angle=90,margin = margin(rep(5,4))),
+        axis.title.y.right = element_text(size=22,face="bold",angle=-90,margin = margin(rep(5,4))),
+        axis.text.x = element_text(angle=90,hjust=1,vjust=0.5,size=20,color="black",margin = margin(rep(3,4))),
+        axis.text.y = element_text(hjust=1,vjust=0.5,size=20,color="black",margin = margin(rep(3,4))),
+        axis.text.y.right = element_text(hjust=-1,vjust=0.5,size=20,color="black",margin = margin(rep(3,4))),
+        plot.title = element_text(size=22,hjust = 0.5,face="bold"),
+        legend.text=element_text(size=17, color="black"),
+        legend.title=element_text(size=19, color="black"),
+        legend.key = element_rect(colour = NA, fill = NA),
+        panel.grid.minor.x = element_blank(), 
+        panel.grid.major.x = element_blank(), 
+        panel.grid.minor.y = element_blank(),
+        panel.grid.major.y = element_line(size=0.8,linetype=2,color="gray80"),
+        panel.background = element_blank(),
+        strip.background = element_blank(),
+        strip.text=element_text(size=22),
+        axis.ticks.length=unit(.2, "cm"),
+        axis.ticks = element_line(size=0.8),
+        panel.spacing=unit(1, "lines")
+        )
+}
+```
+
+```{r,fig.width=7,fig.height=13}
+non_escapee<-rownames(Xa_ratio)[rownames(Xa_ratio)%in%escapee==FALSE]
+seurat@meta.data$Xa_escapee<-colMeans(Xa_ratio[escapee,],na.rm=TRUE)
+seurat@meta.data$Xa_non_escapee<-colMeans(Xa_ratio[non_escapee,],na.rm=TRUE)
+seurat@meta.data$Xa_XIST<-Xa_ratio["XIST",]
+pdat<-seurat@meta.data %>% 
+  mutate(temp=paste0(seurat$sample,"_",seurat$cluster2))
+remove_cluster<-which(table(pdat$temp)<5) %>% names()
+pdat<-filter(pdat,temp%in%remove_cluster==FALSE)
+
+p1<-ggplot(pdat,aes(x=cluster2,y=Xa_escapee*100,fill=cluster2))+
+  geom_violin(show.legend = FALSE,scale = "width")+
+  # geom_jitter(size=0.2,show.legend = FALSE)+
+  scale_fill_manual(values=germ2_pal)+
+  # theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5,size=15))+
+  xlab("")+
+  ylab("Xa Allele Usage")+
+  ylim(0,100)+
+  # ggtitle(paste0("%Xa < 90 in VEM (",length(escapee),")"))+
+  ggtitle(paste0("%Xa < 90 in VEM"))+
+  facet_grid(.~sample,scales="free_x",space="free")+
+  stat_summary(
+    fun.data = "mean_sdl",  fun.args = list(mult = 1), 
+    geom = "pointrange", color = "black", show.legend = FALSE, size=0.8
+    )+
+  geom_hline(yintercept=50,linetype=2,size=0.8)+
+  expand_limits(x = 0, y = 0)
+
+p2<-ggplot(pdat,aes(x=cluster2,y=Xa_non_escapee*100,fill=cluster2))+
+  geom_violin(show.legend = FALSE,scale = "width")+
+  # geom_jitter(size=0.2,show.legend = FALSE)+
+  scale_fill_manual(values=germ2_pal)+
+  # theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5,face="bold",size=15))+
+  xlab("")+
+  ylab("Xa allele usage")+
+  # ggtitle(paste0("%Xa >= 90 in VEM (",length(non_escapee),")"))+
+  ggtitle(expression(bold("%Xa" >= "90 in VEM")))+
+  facet_grid(.~sample,scales="free_x",space="free")+
+  stat_summary(
+    fun.data = "mean_sdl",  fun.args = list(mult = 1), 
+    geom = "pointrange", color = "black", show.legend = FALSE, size=0.8
+    )+
+  geom_hline(yintercept=50,linetype=2,size=0.8)+
+  scale_y_continuous(breaks=c(0,25,50,75,100),labels=c(0,25,50,75,100),limits = c(0,110))+
+  expand_limits(x = 0, y = 0)
+
+p3<-ggplot(pdat,aes(x=cluster2,y=Xa_XIST*100,fill=cluster2))+
+  geom_violin(show.legend = FALSE,scale = "width")+
+  # geom_jitter(size=0.2,show.legend = FALSE)+
+  scale_fill_manual(values=germ2_pal)+
+  # theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5,face="bold",size=15))+
+  xlab("")+
+  ylab("Xa allele usage")+
+  ggtitle("XIST")+
+  facet_grid(.~sample,scales="free_x",space="free")+
+  stat_summary(
+    fun.data = "mean_sdl",  fun.args = list(mult = 1), 
+    geom = "pointrange", color = "black", show.legend = FALSE
+    )+
+  geom_hline(yintercept=50,linetype=2,size=0.8)+
+  ylim(0,100)+
+  expand_limits(x = 0, y = 0)
+p1/p2/p3&mytheme()
+pdf(paste0(filename,"/escapee_VEM.pdf"),width=7,height=10)
+p1/p2&mytheme()
+dev.off()
+```
+
+```{r,fig.width=4,fig.height=13}
+non_escapee<-rownames(Xa_ratio)[rownames(Xa_ratio)%in%escapee==FALSE]
+seurat@meta.data$Xa_escapee<-colMeans(Xa_ratio[escapee,],na.rm=TRUE)
+seurat@meta.data$Xa_non_escapee<-colMeans(Xa_ratio[non_escapee,],na.rm=TRUE)
+seurat@meta.data$Xa_XIST<-Xa_ratio["XIST",]
+
+p1<-ggplot(seurat@meta.data,aes(x=cluster2,y=Xa_escapee*100,fill=cluster2))+
+  geom_violin(show.legend = FALSE,scale = "width")+
+  # geom_jitter(size=0.2,show.legend = FALSE)+
+  scale_fill_manual(values=germ2_pal)+
+  # theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5,face="bold",size=15))+
+  xlab("")+
+  ylab("Xa Allele Usage")+
+  ylim(0,100)+
+  ggtitle(paste0("%Xa < 90 in VEM (",length(escapee),")"))+
+  stat_summary(
+    fun.data = "mean_sdl",  fun.args = list(mult = 1), 
+    geom = "pointrange", color = "black", show.legend = FALSE
+    )+
+  geom_hline(yintercept=50,linetype=2)+
+  expand_limits(x = 0, y = 0)
+
+p2<-ggplot(seurat@meta.data,aes(x=cluster2,y=Xa_non_escapee*100,fill=cluster2))+
+  geom_violin(show.legend = FALSE,scale = "width")+
+  # geom_jitter(size=0.2,show.legend = FALSE)+
+  scale_fill_manual(values=germ2_pal)+
+  # theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5,face="bold",size=15))+
+  xlab("")+
+  ylab("Xa Allele Usage")+
+  ggtitle(paste0("%Xa >= 90 in VEM (",length(non_escapee),")"))+
+  stat_summary(
+    fun.data = "mean_sdl",  fun.args = list(mult = 1), 
+    geom = "pointrange", color = "black", show.legend = FALSE
+    )+
+  geom_hline(yintercept=50,linetype=2,size=0.8)+
+  scale_y_continuous(breaks=c(0,25,50,75,100),labels=c(0,25,50,75,100),limits = c(0,110))+
+  expand_limits(x = 0, y = 0)
+
+p3<-ggplot(seurat@meta.data,aes(x=cluster2,y=Xa_XIST*100,fill=cluster2))+
+  geom_violin(show.legend = FALSE,scale = "width")+
+  # geom_jitter(size=0.2,show.legend = FALSE)+
+  scale_fill_manual(values=germ2_pal)+
+  # theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5,face="bold",size=15))+
+  xlab("")+
+  ylab("Xa Allele Usage")+
+  ggtitle("XIST")+
+  stat_summary(
+    fun.data = "mean_sdl",  fun.args = list(mult = 1), 
+    geom = "pointrange", color = "black", show.legend = FALSE
+    )+
+  geom_hline(yintercept=50,linetype=2)+
+  ylim(0,100)+
+  expand_limits(x = 0, y = 0)
+p1/p2/p3&mytheme()
+pdf(paste0(filename,"/escapee_VEM.pdf"),width=4,height=10)
+p1/p2&mytheme()
+dev.off()
+```

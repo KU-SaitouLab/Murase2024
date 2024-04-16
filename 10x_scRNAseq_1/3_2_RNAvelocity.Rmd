@@ -1,0 +1,81 @@
+---
+title: 'RNAvelocity'
+author: "Ryuta Yokogawa"
+output:
+  html_document:
+    number_sections: yes
+    toc: true
+    toc_float: true
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+# knitr::opts_knit$set(root.dir = "~/Library/CloudStorage/OneDrive-KyotoUniversity/10xanalysis/RMD for analysis/Murase_paper/Final")
+```
+
+data: 
+
+Hs_in-vivo (wk7, wk9, wk10, wk11, wk13, wk16)
+Hs_in-vitro (c11, c56, c86, c117)
+
+# Set up
+```{r}
+filename<-"3_2_RNAvelocity"
+sample<-c("AC7w","AC9w","AC10w","YK11w","AC13w","AC16w","c11","c56","c86","c117")
+dataset<-c(rep("Hs_in-vivo",6), rep("Hs_in-vitro",4))
+mapping<-"cr601_GRCh38p12chrxmv2_20221222"
+```
+
+```{r}
+if(!dir.exists(filename)){
+    dir.create(filename)
+}
+```
+
+
+## Load libraries
+
+```{r}
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(SeuratWrappers)
+  library(patchwork)
+  library(Seurat)
+  library(plotly)
+  library(Matrix)
+  library(data.table)
+  library(gridExtra)
+  library(scran)
+  library(scater)
+  library(knitr)
+  library(reticulate)
+})
+set.seed(0)
+```
+
+```{r}
+ori_seurat<-readRDS("3_1_RNAvelocity.rds")
+seurat<-subset(ori_seurat,orig.ident%in%c("AC7w","AC9w","AC10w","YK11w","AC13w","AC16w"))
+s<-CreateSeuratObject(seurat[["spliced"]]@counts,assay="spliced",meta.data=seurat@meta.data)
+s[["unspliced"]]<-CreateAssayObject(seurat[["unspliced"]]@counts)
+```
+
+```{r}
+SeuratDisk::SaveH5Seurat(s, filename = paste0(filename,"/VIVO.h5Seurat") ,overwrite = TRUE)
+SeuratDisk::Convert(paste0(filename,"/VIVO.h5Seurat"), dest = "h5ad",overwrite = TRUE)
+fwrite(seurat[["umap"]]@cell.embeddings,paste0(filename,"/VIVO_umap.csv"),col.names=FALSE)
+fwrite(seurat[["mnn"]]@cell.embeddings,paste0(filename,"/VIVO_mnn.csv"),col.names=FALSE)
+```
+
+```{r}
+seurat<-subset(ori_seurat,orig.ident%in%c("AC7w","AC9w","AC10w","YK11w","AC13w","AC16w")==FALSE)
+s<-CreateSeuratObject(seurat[["spliced"]]@counts,assay="spliced",meta.data=seurat@meta.data)
+s[["unspliced"]]<-CreateAssayObject(seurat[["unspliced"]]@counts)
+```
+
+```{r}
+SeuratDisk::SaveH5Seurat(s, filename = paste0(filename,"/VITRO.h5Seurat") ,overwrite = TRUE)
+SeuratDisk::Convert(paste0(filename,"/VITRO.h5Seurat"), dest = "h5ad",overwrite = TRUE)
+fwrite(seurat[["umap"]]@cell.embeddings,paste0(filename,"/VITRO_umap.csv"),col.names=FALSE)
+fwrite(seurat[["mnn"]]@cell.embeddings,paste0(filename,"/VITRO_mnn.csv"),col.names=FALSE)
+```

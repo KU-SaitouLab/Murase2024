@@ -1,0 +1,622 @@
+---
+title: '4_1_HVGs_vivoACYK_c11_56_86_117_res0.8_5000HVGs_exp2in5cells_max2.0'
+author: "Ryuta Yokogawa"
+date: '2023/04/13'
+output:
+  html_document:
+    number_sections: yes
+    toc: true
+    toc_float: true
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "~/Library/CloudStorage/OneDrive-KyotoUniversity/10xanalysis/RMD for analysis/Murase_paper/Final")
+
+```
+
+data: 
+
+Hs_in-vivo (AC7w, AC9w, AC10w, YK11w, AC13w, AC16w)
+Hs_in-vitro (c11, c56, c86, c117)
+
+# Set up
+```{r}
+filename<-"4_1_HVGs_vivoACYK_c11_56_86_117_res0.8_5000HVGs_exp2in5cells_max2.0"
+orig.ident<-c("AC7w","AC9w","AC10w","YK11w","AC13w","AC16w", "c11","c56","c86", "c117")
+sample<-c("AC7w","AC9w","AC10w","YK11w","AC13w","AC16w","c11","c56","c86","c117")
+dataset<-c(rep("Hs_in-vivo",6), rep("Hs_in-vitro",4))
+mapping<-"cr601_GRCh38p12chrxmv2_20221222"
+```
+
+```{r}
+if(!dir.exists(filename)){
+    dir.create(filename)
+}
+```
+
+## Load libraries
+
+```{r,message=FALSE,warning=FALSE}
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(data.table)
+  library(Seurat)
+  library(ggthemes)
+  library(gridExtra)
+  library(ComplexHeatmap)
+  library(scales)
+  library(RColorBrewer)
+  library(amap)
+  library(dendextend)
+  library(Matrix)
+  library(knitr)
+  library(reticulate)
+})
+set.seed(0)
+```
+
+```{r}
+packageVersion("Seurat")
+```
+
+```{r}
+celltype_pal<-c(colorRampPalette(c("white","#008000"))(4)[4:3],
+                colorRampPalette(c("white","#005080"))(4)[4:3],
+                colorRampPalette(c("white","red"))(4)[4:2],
+                "gold",
+                "#b35900",
+                "#a020f0"
+                ) %>% 
+  setNames(c("VEM1","VEM2","EM1","EM2","M1","M2","M3","PLL1","PLL2","ZPD"))
+```
+
+```{r}
+theme_set(theme(text=element_text(size = 18),
+                panel.background = element_rect(fill = "white",color="gray20"),
+                panel.grid=element_line(color="gray92"),
+                legend.key = element_rect(colour = NA, fill = NA)))
+# source("~/Nextcloud/10xanalysis/core_functions.R")
+```
+
+## Import data
+
+```{r}
+seu_ori <- readRDS("2_annotation_vivoACYK_c11_56_86_117_res0.8_5000HVGs_exp2in5cells.rds")
+#seu_ori$temp<-(seu_ori$method=="in vivo"&seu_ori$cluster%in%c("VEM1"))==FALSE
+#seu_ori<-subset(seu_ori,temp==TRUE)
+seu_ori$temp<-seu_ori$method=="in vivo"
+seurat<-subset(seu_ori,subset=temp==TRUE)
+seurat$cluster<-factor(seurat$cluster,levels=intersect(levels(seurat$cluster),unique(seurat$cluster)))
+seurat<-ScaleData(seurat,features=rownames(seurat))
+```
+
+```{r}
+seu_ori$tmp.cluster<-paste0(seu_ori$cluster,"_",seu_ori$method) %>%
+  factor(levels=paste0(c("VEM1","VEM2","EM1","EM2","M1","M2","M3","PLL1","PLL2","ZPD"),"_",rep(c("in vivo","in vitro"),each=10)))
+```
+
+```{r}
+markers<-c("GTSF1","PIWIL2","MEG3","DAZL","PRAME","DDX4","DPPA5","DPPA3","PECAM1","PRDM1","SOX13","UTF1","POU5F1","TFAP2C","PDPN","NANOG","SOX15","KLF4","SOX17","LIN28A","TFCP2L1","AURKA","MKI67","CDC20","PLK1","CENPA","STAT1","REC8","STRA8","ANHX","ASB9","ZGLP1","PBX1","SYCP1","SPO11","RAD51AP2","PRDM9","HORMAD2","SYCP3","HORMAD1","SYCE3","MEIOC","ZCWPW1","BOLL","SYCP2","BHMG1","DMC1","RAD21L1","SYCE2","IL13RA2","PIWIL1","SYCE1","SMC1B","STAG3","SMCHD1","TEX12","MAEL","MEIKIN","SOHLH1","FGF9","ITGA4","ZP4","JAG1","FIGLA","ZP3","NOBOX","WEE2","ZP2","GDF9","NLRP5")
+```
+
+# Analysis
+## Call variable genes
+
+```{r}
+seurat <- FindVariableFeatures(seurat, selection.method = "vst", nfeatures = 2000)
+```
+
+We identify highly variable genes (HVGs) among the ? clusters [top 2000 HVGs minus genes with low-expression levels (cluster average expression log (ssUMI+1) ≤ 0)].
+
+```{r}
+n.top=5000 #Number of HVGs
+max=2.0 #Limit HVGs whose cluster average expression value is over max in at least one cluster
+mean=0
+n.cells=5
+```
+
+
+```{r,fig.width=3,fig.height=5}
+pdat<-seurat[["RNA"]]@meta.features
+pdat$max<-rowSums(seurat[["RNA"]]@data)
+pdat$n.cell<-rowSums(seurat[["RNA"]]@data>2)
+```
+
+```{r,fig.width=3,fig.height=5}
+genes_all<-rownames(pdat)[order(pdat$vst.variance.standardized,decreasing = TRUE)]
+genes<-intersect(genes_all,c(rownames(pdat)[pdat$vst.mean>=mean&pdat$n.cell>=n.cells])) %>% head(n.top)
+# genes<-intersect(head(VariableFeatures(seurat), n.top),rownames(pdat))
+pdat$HVGs<-rownames(pdat)%in%genes
+```
+
+```{r}
+ggplot(pdat,aes(x=max))+
+  geom_histogram(binwidth = 5)+
+  xlim(0,500)
+```
+
+```{r}
+ggplot(pdat,aes(x=n.cell))+
+  geom_histogram(binwidth = 2)+
+  xlim(0,30)
+```
+
+
+```{r,fig.width=3,fig.height=5}
+ggplot(pdat,aes(x=vst.mean,y=vst.variance.standardized,color=HVGs))+
+  geom_point(show.legend = F)+
+  scale_x_log10()+
+  scale_color_manual(values=c("FALSE"="black","TRUE"="red"))+
+  ggtitle(paste0("DEGs (",length(genes),")"))+
+  theme_classic(base_size = 15)
+```
+
+```{r fig.height=8, fig.width=16}
+slot="scale.data"
+cell_cluster="cluster"
+
+group <- seurat@meta.data[,cell_cluster]
+mat <- levels(group) %>% 
+      lapply(function(y){
+        if(y%in%group){
+          if (sum(group==y)>1){
+            GetAssayData(seurat,slot=slot)[genes,group==y] %>% 
+              rowMeans()
+          }else{
+            GetAssayData(seurat,slot=slot)[genes,group==y]
+          }
+        }else{
+          rep(NA,length(genes))
+        }
+      }) %>% do.call(cbind,.) %>% 
+      as.data.frame() %>% 
+      `colnames<-`(levels(group))
+
+mat2 <- levels(group) %>% 
+      lapply(function(y){
+        if(y%in%group){
+          if (sum(group==y)>1){
+            GetAssayData(seurat,slot="data")[genes,group==y] %>% 
+              rowMeans()
+          }else{
+            GetAssayData(seurat,slot="data")[genes,group==y]
+          }
+        }else{
+          rep(NA,length(genes))
+        }
+      }) %>% do.call(cbind,.) %>% 
+      as.data.frame() %>% 
+      `colnames<-`(levels(group))
+high<-rownames(mat2)[apply(mat2,1,max)>max]
+```
+
+```{r}
+ggplot(pdat,aes(x=vst.mean))+
+  geom_histogram(binwidth = 0.01)+
+  xlim(0,2)+
+  geom_vline(xintercept = mean,color="red")+
+  xlab("Cluster average expression")+
+  scale_x_log10()
+```
+
+```{r}
+pdat_<-data.frame(mean=apply(mat2,1,max))
+ggplot(pdat_,aes(x=mean))+
+  geom_histogram(binwidth = 0.1)+
+  xlim(0,10)+
+  geom_vline(xintercept = max,color="red")+
+  xlab("Cluster average expression")+
+  ggtitle(paste0(length(high)," genes"))
+```
+
+```{r fig.height=8, fig.width=16}
+mat<-mat[high,]
+paste0("HVGs (",length(high),")")
+
+dist = Dist(mat, method="euclidean")
+hcl = hclust(dist, method="ward.D2")
+split<-cutree(hcl,k=6) %>% factor(levels=c(6,5,3,4,2,1))#top to bottom
+sp<-split
+# names(split)[split==3]<-rev(names(split[split==3]))
+# names(split)[split==1]<-rev(names(split[split==1]))
+
+pal<-hue_pal()(nlevels(split))[as.numeric(as.character(split))]
+
+hcl = dendextend::rotate(hcl, names(split)[order(split)])
+row_dend=as.dendrogram(hcl)
+row_dend = set(row_dend, "labels", 1:nrow(mat))
+
+par(mar = c(55, 10, 1, 1), cex=0.5)
+par(cex.axis=2)
+plot(row_dend, horiz = FALSE)
+colored_bars(colors = pal, dend = row_dend, rowLabels = "Cluster")#The left side of this dendrogram is the top side of heatmap
+legend("topright", fill=hue_pal()(nlevels(split)), legend=1:nlevels(split))
+```
+
+```{r,fig.width=10,fig.height=20}
+if (slot=="scale.data"){
+  breaksList = seq(-2, 2, by = 0.01)
+  col_fun = circlize::colorRamp2(breaksList, colorRampPalette(rev(RColorBrewer::brewer.pal(n = 10, name = "RdYlBu")))(length(breaksList)))
+}else{
+  breaksList = c(seq(0, 0.99, by = 0.01),seq(1, 4, by = 0.05))
+  col_fun = circlize::colorRamp2(breaksList, colorRampPalette(rev(RColorBrewer::brewer.pal(n = 10, name = "RdYlBu")))(length(breaksList)))
+}
+
+
+ha = HeatmapAnnotation(cluster = levels(group) %>% factor(levels=levels(group)),
+    col = list(cluster=celltype_pal))
+
+hb = rowAnnotation(foo = anno_mark(at = which(rownames(mat)%in%markers), 
+                                   labels = rownames(mat)[rownames(mat)%in%markers],
+                                   which="row",
+                                   link_width = unit(1.5, "cm"),
+                                   labels_gp = gpar(fontsize=15,fontface="bold.italic")))
+
+HM<-Heatmap(mat,
+            name="exp",
+            cluster_columns = F,
+            cluster_rows = hcl,
+            use_raster=TRUE,
+            col = col_fun,
+            row_labels=rep("",nrow(mat)),
+            column_labels=rep("",ncol(mat)),
+            clustering_distance_rows = "euclidean",
+            top_annotation = ha,
+            row_names_gp = gpar(fontsize = 3),
+            right_annotation = hb,
+            split=6,
+            cluster_row_slices=T,
+            row_dend_width = unit(4, "cm"))
+pdf(paste0(filename,"/",filename,".pdf"),width=10,height=20)
+HM<-draw(HM)
+dev.off()
+draw(HM)
+```
+
+```{r}
+r.dend <- row_dend(HM)
+rcl.list <- row_order(HM)
+
+lapply(rcl.list, function(x) length(x)) %>% 
+  as.data.frame(row.names = "Number of genes") %>% 
+  `colnames<-`(paste0("Cluster ",c(1:6))) %>% 
+  kable()
+```
+
+```{r}
+# Save HVGs list.
+clu_df <- lapply(1:length(rcl.list), function(i){
+  out <- data.frame(GeneID = rownames(mat[rcl.list[[i]],,drop=FALSE]),
+                    Cluster = paste0("cluster", i),
+                    stringsAsFactors = FALSE)
+  return(out)
+  }) %>%
+  do.call(rbind, .)
+fwrite(clu_df,paste0(filename,"/HVGs_max2.0.csv"))
+```
+
+## Calculate correlation between clusters using HVGs
+
+```{r}
+group<-seurat@meta.data[,cell_cluster]
+mat<-levels(group) %>% 
+  setNames(.,.) %>% 
+  lapply(function(x){
+    rowMeans(seurat[["RNA"]]@data[genes,group==x,drop=FALSE])
+  }) %>% 
+  do.call(cbind,.)
+cor_mat<-cor(mat)
+cor_mat[rowSums(is.na(cor_mat)==FALSE)==1,]<-NA
+```
+
+```{r,fig.width=6.5,fig.height=4}
+breaksList = seq(0.2, 1, by = 0.01)
+col_fun = circlize::colorRamp2(breaksList, colorRampPalette(rev(RColorBrewer::brewer.pal(n = 7, name = "RdYlBu")))(length(breaksList)))
+ha = HeatmapAnnotation(cluster = levels(group) %>% factor(levels=levels(group)),
+                       col = list(cluster=celltype_pal))
+hb = rowAnnotation(cluster = levels(group) %>% factor(levels=levels(group)),
+                   show_legend=FALSE,
+                   col = list(cluster=celltype_pal))
+HM<-Heatmap(cor_mat,
+            name="cor",
+            cluster_columns = F,
+            cluster_rows = F,
+            col = col_fun,
+            top_annotation = ha,
+            left_annotation = hb,
+            row_labels=rep("",nrow(cor_mat)),
+            column_labels=rep("",ncol(cor_mat)),
+            row_names_gp = gpar(fontsize = 7),
+            rect_gp = gpar(col = "gray80", lwd = 1))
+draw(HM)
+pdf(paste0(filename,"/Correlation_max2.0.pdf"), width = 6.5, height = 4)
+draw(HM)
+dev.off()
+```
+
+# in vivo + in vitro
+
+```{r}
+celltype_pal<-c(colorRampPalette(c("white","#008000"))(4)[4:3],
+                colorRampPalette(c("white","#005080"))(4)[4:3],
+                colorRampPalette(c("white","red"))(4)[4:2],
+                "gold",
+                "#b35900",
+                "#a020f0"
+                ) %>% 
+  rep(2) %>% 
+  setNames(paste0(rep(levels(seu_ori$cluster),nlevels(seu_ori$method)),
+                       "_",
+                  rep(levels(seu_ori$method),each=nlevels(seu_ori$cluster))))
+```
+
+```{r}
+genes<-high<-clu_df$GeneID
+seu_ori<-ScaleData(seu_ori,features=genes)
+# seu_ori$tmp.cluster<-paste0(seu_ori$method,"_",seu_ori$cluster) %>% 
+  # factor(levels=paste0(rep(levels(seu_ori$method),each=nlevels(seu_ori$cluster)),
+                       # "_",
+                       # rep(levels(seu_ori$cluster),nlevels(seu_ori$method))) %>% 
+  # intersect(unique(seu_ori$tmp.cluster)))
+```
+
+```{r fig.height=8, fig.width=16}
+slot="scale.data"
+cell_cluster="tmp.cluster"
+
+group <- seu_ori@meta.data[,cell_cluster]
+mat <- levels(group) %>% 
+      lapply(function(y){
+        if(y%in%group){
+          if (sum(group==y)>1){
+            GetAssayData(seu_ori,slot=slot)[genes,group==y] %>% 
+              rowMeans()
+          }else{
+            GetAssayData(seu_ori,slot=slot)[genes,group==y]
+          }
+        }else{
+          rep(NA,length(genes))
+        }
+      }) %>% do.call(cbind,.) %>% 
+      as.data.frame() %>% 
+      `colnames<-`(levels(group))
+```
+
+
+```{r,fig.width=12,fig.height=20}
+if (slot=="scale.data"){
+  breaksList = seq(-2, 2, by = 0.01)
+  col_fun = circlize::colorRamp2(breaksList, colorRampPalette(rev(RColorBrewer::brewer.pal(n = 10, name = "RdYlBu")))(length(breaksList)))
+}else{
+  breaksList = c(seq(0, 0.99, by = 0.01),seq(1, 4, by = 0.05))
+  col_fun = circlize::colorRamp2(breaksList, colorRampPalette(rev(RColorBrewer::brewer.pal(n = 10, name = "RdYlBu")))(length(breaksList)))
+}
+
+
+ha = HeatmapAnnotation(cluster = levels(group) %>% factor(levels=levels(group)),
+    col = list(cluster=celltype_pal))
+
+hb = rowAnnotation(foo = anno_mark(at = which(rownames(mat)%in%markers), 
+                                   labels = rownames(mat)[rownames(mat)%in%markers],
+                                   which="row",
+                                   link_width = unit(1.5, "cm"),
+                                   labels_gp = gpar(fontsize=15,fontface="bold.italic")))
+
+HM<-Heatmap(mat,
+            name="exp",
+            cluster_columns = F,
+            cluster_rows = F,
+            use_raster=TRUE,
+            col = col_fun,
+            row_labels=rep("",nrow(mat)),
+            column_labels=rep("",ncol(mat)),
+            clustering_distance_rows = "euclidean",
+            top_annotation = ha,
+            row_names_gp = gpar(fontsize = 3),
+            right_annotation = hb,
+            # split=8,
+            row_split=clu_df$Cluster,
+            column_split=gsub("_.+$","",colnames(mat)) %>% factor(levels=levels(seu_ori$method)),
+            row_dend_width = unit(4, "cm"))
+pdf(paste0(filename,"/HVGs_in vivo_in vitro_max2.0.pdf"),width=12,height=20)
+HM<-draw(HM)
+dev.off()
+draw(HM)
+```
+
+```{r,fig.width=12,fig.height=20}
+remove_cluster<-c("VEM1_in vivo","VEM2_in vivo","EM2_in vivo","PLL2_in vivo","ZPD_in vitro")
+cluster<-setdiff(levels(group),remove_cluster)
+
+if (slot=="scale.data"){
+  breaksList = seq(-2, 2, by = 0.01)
+  col_fun = circlize::colorRamp2(breaksList, colorRampPalette(rev(RColorBrewer::brewer.pal(n = 10, name = "RdYlBu")))(length(breaksList)))
+}else{
+  breaksList = c(seq(0, 0.99, by = 0.01),seq(1, 4, by = 0.05))
+  col_fun = circlize::colorRamp2(breaksList, colorRampPalette(rev(RColorBrewer::brewer.pal(n = 10, name = "RdYlBu")))(length(breaksList)))
+}
+
+
+ha = HeatmapAnnotation(cluster = cluster %>% factor(levels=levels(group)),
+    col = list(cluster=celltype_pal))
+
+hb = rowAnnotation(foo = anno_mark(at = which(rownames(mat)%in%markers), 
+                                   labels = rownames(mat)[rownames(mat)%in%markers],
+                                   which="row",
+                                   link_width = unit(1.5, "cm"),
+                                   labels_gp = gpar(fontsize=15,fontface="bold.italic")))
+
+HM<-Heatmap(mat[,cluster],
+            name="exp",
+            cluster_columns = F,
+            cluster_rows = F,
+            use_raster=TRUE,
+            col = col_fun,
+            row_labels=rep("",nrow(mat)),
+            column_labels=rep("",length(cluster)),
+            clustering_distance_rows = "euclidean",
+            top_annotation = ha,
+            row_names_gp = gpar(fontsize = 3),
+            right_annotation = hb,
+            # split=8,
+            row_split=clu_df$Cluster,
+            column_split=gsub("^.+_","",cluster) %>% factor(levels=levels(seu_ori$method)),
+            row_dend_width = unit(4, "cm"))
+pdf(paste0(filename,"/HVGs_in vivo_in vitro_max2.0_grayout.pdf"),width=12,height=20)
+HM<-draw(HM)
+dev.off()
+draw(HM)
+```
+
+```{r}
+remove_cluster<-c("VEM1_in vivo","VEM2_in vivo","EM2_in vivo","PLL2_in vivo","ZPD_in vitro")
+mat<-levels(group) %>% 
+  intersect(unique(group)) %>% 
+  setdiff(remove_cluster) %>% 
+  setNames(.,.) %>% 
+  lapply(function(x){
+    rowMeans(seu_ori[["RNA"]]@data[genes,group==x,drop=FALSE])
+  }) %>% 
+  do.call(cbind,.)
+cor_mat<-cor(mat)
+cor_mat[rowSums(is.na(cor_mat)==FALSE)==1,]<-NA
+```
+
+```{r,fig.width=6.5,fig.height=4}
+breaksList = seq(0.2, 1, by = 0.01)
+col_fun = circlize::colorRamp2(breaksList, colorRampPalette(rev(RColorBrewer::brewer.pal(n = 7, name = "RdYlBu")))(length(breaksList)))
+ha = HeatmapAnnotation(cluster = levels(group) %>% setdiff(remove_cluster) %>% factor(levels=levels(group)),
+                       col = list(cluster=celltype_pal))
+hb = rowAnnotation(cluster = levels(group) %>% setdiff(remove_cluster) %>% factor(levels=levels(group)),
+                   show_legend=FALSE,
+                   col = list(cluster=celltype_pal))
+HM<-Heatmap(cor_mat,
+            name="cor",
+            cluster_columns = F,
+            cluster_rows = F,
+            col = col_fun,
+            top_annotation = ha,
+            left_annotation = hb,
+            row_labels=rep("",nrow(cor_mat)),
+            column_labels=rep("",ncol(cor_mat)),
+            row_names_gp = gpar(fontsize = 7),
+            rect_gp = gpar(col = "gray80", lwd = 1))
+draw(HM)
+pdf(paste0(filename,"/Correlation_.pdf"), width = 6.5, height = 4)
+draw(HM)
+dev.off()
+```
+
+```{r,fig.width=12,fig.height=20}
+remove_cluster<-c("VEM1_in vivo","VEM2_in vivo","EM2_in vivo","PLL2_in vivo","ZPD_in vitro")
+cluster<-setdiff(levels(group),remove_cluster)
+cor_mat_temp<-cor_mat[cluster,cluster]
+  breaksList = seq(0, 2, by = 0.01)
+  col_fun = circlize::colorRamp2(breaksList, colorRampPalette(rev(RColorBrewer::brewer.pal(n = 10, name = "RdYlBu")))(length(breaksList)))
+}else{
+  breaksList = c(seq(0, 0.99, by = 0.01),seq(1, 4, by = 0.05))
+  col_fun = circlize::colorRamp2(breaksList, colorRampPalette(rev(RColorBrewer::brewer.pal(n = 10, name = "RdYlBu")))(length(breaksList)))
+}
+
+
+ha = HeatmapAnnotation(cluster = levels(group) %>% setdiff(remove_cluster) %>% factor(levels=levels(group)),
+    col = list(cluster=celltype_pal))
+
+hb = rowAnnotation(foo = anno_mark(at = which(rownames(cor_mat_temp)%in%markers), 
+                                   labels = rownames(cor_mat_temp)[rownames(cor_mat_temp)%in%markers],
+                                   which="row",
+                                   link_width = unit(1.5, "cm"),
+                                   labels_gp = gpar(fontsize=15,fontface="bold.italic")))
+
+HM<-Heatmap(cor_mat_temp,
+            name="exp",
+            cluster_columns = F,
+            cluster_rows = F,
+            use_raster=TRUE,
+            col = col_fun,
+            row_labels=rep("",nrow(cor_mat_temp)),
+            column_labels=rep("",ncol(cor_mat_temp)),
+            clustering_distance_rows = "euclidean",
+            top_annotation = ha,
+            row_names_gp = gpar(fontsize = 3),
+            right_annotation = hb,
+            # split=8,
+            # row_split=clu_df$Cluster,
+            column_split=gsub("_.+$","",colnames(cor_mat_temp)) %>% factor(levels=levels(seu_ori$method)),
+            row_dend_width = unit(4, "cm"))
+pdf(paste0(filename,"/HVGs_in vivo_in vitro_max2.0_removed.pdf"),width=12,height=20)
+HM<-draw(HM)
+dev.off()
+draw(HM)
+```
+
+```{r fig.height=8, fig.width=16}
+slot="scale.data"
+cell_cluster="tmp.cluster"
+
+group <- seu_ori@meta.data[,cell_cluster]
+mat <- levels(group) %>% 
+      lapply(function(y){
+        if(y%in%group){
+          if (sum(group==y)>1){
+            GetAssayData(seu_ori,slot=slot)[genes,group==y] %>% 
+              rowMeans()
+          }else{
+            GetAssayData(seu_ori,slot=slot)[genes,group==y]
+          }
+        }else{
+          rep(NA,length(genes))
+        }
+      }) %>% do.call(cbind,.) %>% 
+      as.data.frame() %>% 
+      `colnames<-`(levels(group))
+```
+
+
+```{r,fig.width=12,fig.height=20}
+if (slot=="scale.data"){
+  breaksList = seq(-2, 2, by = 0.01)
+  col_fun = circlize::colorRamp2(breaksList, colorRampPalette(rev(RColorBrewer::brewer.pal(n = 10, name = "RdYlBu")))(length(breaksList)))
+}else{
+  breaksList = c(seq(0, 1.99, by = 0.01),seq(2, 6, by = 0.05))
+  col_fun = circlize::colorRamp2(breaksList, colorRampPalette(rev(RColorBrewer::brewer.pal(n = 10, name = "RdYlBu")))(length(breaksList)))
+}
+
+
+ha = HeatmapAnnotation(cluster = levels(group) %>% factor(levels=levels(group)),
+    col = list(cluster=celltype_pal))
+
+hb = rowAnnotation(foo = anno_mark(at = which(rownames(mat)%in%markers), 
+                                   labels = rownames(mat)[rownames(mat)%in%markers],
+                                   which="row",
+                                   link_width = unit(1.5, "cm"),
+                                   labels_gp = gpar(fontsize=15,fontface="bold.italic")))
+
+HM<-Heatmap(mat,
+            name="exp",
+            cluster_columns = F,
+            cluster_rows = F,
+            use_raster=TRUE,
+            col = col_fun,
+            row_labels=rep("",nrow(mat)),
+            column_labels=rep("",ncol(mat)),
+            clustering_distance_rows = "euclidean",
+            clustering_method_rows = "ward.D2",
+            top_annotation = ha,
+            row_names_gp = gpar(fontsize = 3),
+            right_annotation = hb,
+            # split=8,
+            # row_split=clu_df$Cluster,
+            column_split=gsub("_.+$","",colnames(mat)) %>% factor(levels=levels(seu_ori$method)),
+            row_dend_width = unit(4, "cm"))
+# pdf(paste0(filename,"/HVGs_in vivo_in vitro.pdf"),width=12,height=20)
+# HM<-draw(HM)
+# dev.off()
+draw(HM)
+```
+
+```{r}
+
+```
+

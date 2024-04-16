@@ -1,0 +1,163 @@
+---
+title: '3_4_RNAvelocity'
+author: "Ryuta Yokogawa"
+output:
+  html_document:
+    number_sections: yes
+    toc: true
+    toc_float: true
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+# knitr::opts_knit$set(root.dir = "~/Library/CloudStorage/OneDrive-KyotoUniversity/10xanalysis/RMD for analysis/Murase_paper/Final")
+```
+
+data: 
+
+Hs_in-vivo (wk7, wk9, wk10, wk11, wk13, wk16)
+Hs_in-vitro (c11, c56, c86, c117)
+
+# Set up
+```{r}
+filename<-"3_4_RNAvelocity"
+sample<-c("AC7w","AC9w","AC10w","YK11w","AC13w","AC16w","c11","c56","c86","c117")
+dataset<-c(rep("Hs_in-vivo",6), rep("Hs_in-vitro",4))
+mapping<-"cr601_GRCh38p12chrxmv2_20221222"
+```
+
+```{r}
+if(!dir.exists(filename)){
+    dir.create(filename)
+}
+```
+
+## Load libraries
+
+```{r}
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(patchwork)
+  library(Seurat)
+  library(Matrix)
+  library(data.table)
+  library(gridExtra)
+  library(ggplot2)
+})
+set.seed(0)
+```
+
+```{r}
+theme_set(theme(text=element_text(size = 18),
+                panel.background = element_rect(fill = "white",color="gray20"),
+                panel.grid=element_line(color="gray92"),
+                legend.key = element_rect(colour = NA, fill = NA)))
+rd_theme<-function(legend.position="none"){theme(axis.title=element_blank(),
+                           axis.text=element_blank(),
+                           axis.ticks=element_blank(),
+                           panel.grid=element_blank(),
+                           legend.position = legend.position,
+                           panel.background = element_blank(),
+                           panel.border = element_blank(),
+                           axis.line = element_line(size=0.5),#element_blank(),
+                           plot.title= element_text(face="bold",size=35)
+)}
+```
+
+```{r}
+seurat<-readRDS("3_1_RNAvelocity.rds")
+v_vivo<-fread("3_3_RNAvelocity_vivo_stochastic_UMAP.txt")
+v_VITRO<-fread("3_3_RNAvelocity_VITRO_stochastic_UMAP.txt")
+```
+
+```{r}
+a=4
+pdat<-seurat[["umap"]]@cell.embeddings %>% 
+  as.data.frame()
+pdat$xend=pdat$UMAP_1
+pdat$yend=pdat$UMAP_2
+pdat[seurat$method=="in vivo","xend"]<-pdat[seurat$method=="in vivo","xend"]+v_vivo$V1*a
+pdat[seurat$method=="in vivo","yend"]<-pdat[seurat$method=="in vivo","yend"]+v_vivo$V2*a
+pdat[seurat$method=="in vitro","xend"]<-pdat[seurat$method=="in vitro","xend"]+v_VITRO$V1*a
+pdat[seurat$method=="in vitro","yend"]<-pdat[seurat$method=="in vitro","yend"]+v_VITRO$V2*a
+pdat$size=sqrt((pdat$xend-pdat$UMAP_1)^2+(pdat$yend-pdat$UMAP_2)^2)
+pdat$method<-seurat$method
+```
+
+```{r,fig.width=9,fig.height=8}
+p1<-ggplot()+
+  geom_segment(aes(x=UMAP_1,y=UMAP_2,xend=xend,yend=yend,color=method),
+               arrow=arrow(length=unit(pdat$size/1.0,"cm")),data=pdat,size=0.5)+
+  scale_color_manual(values=c("in vivo"="#1F77B4","in vitro"="#FF7F0E"))+
+  rd_theme(legend.position = "right")
+p1
+```
+
+```{r}
+pdf(paste0(filename,"/UMAP1.pdf"),height=8,width=9)
+p1
+dev.off()
+```
+
+
+```{r}
+a=5
+pdat<-seurat[["umap"]]@cell.embeddings %>% 
+  as.data.frame()
+pdat$xend=pdat$UMAP_1
+pdat$yend=pdat$UMAP_2
+pdat[seurat$method=="in vivo","xend"]<-pdat[seurat$method=="in vivo","xend"]+v_vivo$V1*a
+pdat[seurat$method=="in vivo","yend"]<-pdat[seurat$method=="in vivo","yend"]+v_vivo$V2*a
+pdat[seurat$method=="in vitro","xend"]<-pdat[seurat$method=="in vitro","xend"]+v_VITRO$V1*a
+pdat[seurat$method=="in vitro","yend"]<-pdat[seurat$method=="in vitro","yend"]+v_VITRO$V2*a
+pdat$size=sqrt((pdat$xend-pdat$UMAP_1)^2+(pdat$yend-pdat$UMAP_2)^2)
+pdat$method<-seurat$method
+```
+
+```{r,fig.width=16,fig.height=8}
+plts<-unique(pdat$method) %>%
+  lapply(function(x){
+    sub_pdat<-filter(pdat,method==x)
+    ggplot(NULL)+
+      geom_point(pdat,mapping=aes(x=UMAP_1,y=UMAP_2),color="lightgrey",size=1)+
+      #geom_point(sub_pdat,mapping=aes(x=UMAP_1,y=UMAP_2),color="red",size=1)+
+      geom_segment(sub_pdat,mapping=aes(x=UMAP_1,y=UMAP_2,xend=xend,yend=yend),
+               arrow=arrow(length=unit(sub_pdat$size/1,"cm")),size=1, color="#1F77B4")+
+      ggtitle(x)+
+      theme(plot.title=element_text(size=30,hjust=0.5,vjust=1))+
+      theme(axis.title=element_blank(),
+                axis.text=element_blank(),
+                axis.ticks=element_blank(),
+                legend.position = "none")
+  })
+
+wrap_plots(plts, ncol = 2)&rd_theme()
+```
+
+
+```{r,fig.width=16,fig.height=8}
+plts<-unique(pdat$method) %>%
+  lapply(function(x){
+    sub_pdat<-filter(pdat,method==x)
+    ggplot(NULL)+
+      geom_point(pdat,mapping=aes(x=UMAP_1,y=UMAP_2),color="lightgrey",size=1)+
+      #geom_point(sub_pdat,mapping=aes(x=UMAP_1,y=UMAP_2),color="red",size=1)+
+      geom_segment(sub_pdat,mapping=aes(x=UMAP_1,y=UMAP_2,xend=xend,yend=yend),
+               arrow=arrow(length=unit(sub_pdat$size/1,"cm")),size=1, color="#FF7F0E")+
+      ggtitle(x)+
+      theme(plot.title=element_text(size=30,hjust=0.5,vjust=1))+
+      theme(axis.title=element_blank(),
+                axis.text=element_blank(),
+                axis.ticks=element_blank(),
+                legend.position = "none")
+  })
+
+wrap_plots(plts, ncol = 2)&rd_theme()
+```
+
+```{r}
+pdf(paste0(filename,"/UMAP2.pdf"),height=8,width=16)
+wrap_plots(plts, ncol = 2)&rd_theme()
+dev.off()
+```
+

@@ -1,0 +1,280 @@
+---
+title: "Untitled"
+author: "Yusuke Murase"
+date: "1/18/2023"
+output: html_document
+---
+clusteringしannotsationをつけfileを保存
+```{r}
+library(Seurat)
+library(Matrix)
+library(SeuratObject)
+library(data.table)
+library(tidyverse)
+library(RColorBrewer)
+library(SeuratDisk)
+library(reticulate)
+repl_python()
+```
+
+```{r}
+dir<- "/Volumes/Extreme Pro/publicNGSdata/Zheng2019/SRR9719056_postembsac_cr60GRCh38p12chrxmv1b1/outs/filtered_feature_bc_matrix"
+data <- Read10X(data.dir = dir)
+seurat_object_Zheng = CreateSeuratObject(counts = data, project = "Zheng2019", min.cells = 3, min.features = 200)
+
+write.table(t(as.matrix(GetAssayData(object = seurat_object_Zheng, slot = "counts"))), 
+            'seurat_object_Zheng.csv', 
+            sep = ',', row.names = T, col.names = T, quote = F)
+
+data_RECODE<- read.table("seurat_object_Zheng.RECODE.csv", sep =",", header = T, row.names = 1 )
+
+seurat_object_Zheng[["RECODE"]] <- CreateAssayObject(counts = Matrix(t(as.matrix(data_RECODE)), sparse = T))#転置して行と列を入れ替える必要があった
+
+seurat_object_Zheng[["percent.mt"]] <- PercentageFeatureSet(seurat_object_Zheng, pattern = "^MT-")
+VlnPlot(seurat_object_Zheng, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+plot1 <- FeatureScatter(seurat_object_Zheng, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(seurat_object_Zheng, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+setwd("/Users/yusukemurase/R/10x/T1KO_10x/T1KO_10X/Zheng2019_QC")
+png("seurat_object_Zheng_QC_scatter.png", width =1000)
+plot1 + plot2
+dev.off()
+
+seurat_object_Zheng_fil <- subset(seurat_object_Zheng, subset = nCount_RNA >10000 &  nCount_RNA <100000 & percent.mt < 10)
+setwd("/Users/yusukemurase/R/10x/T1KO_10x/T1KO_10X/Zheng2019_QC")
+png( "Zheng2019_nC10k_nC100k_pmt10.png")
+VlnPlot(seurat_object_Zheng_fil, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+dev.off()
+ncol(x = seurat_object_Zheng_fil)#5910
+ncol(seurat_object_Zheng) - ncol(seurat_object_Zheng_fil)#633 cells were filtered out
+
+UMImatrix <- seurat_object_Zheng_fil[["RNA"]]@counts#このマトリックスはcolnamesがcellbarcode、rownamesがgene symbolである。
+genesymbolUMI <- rownames(seurat_object_Zheng_fil[["RNA"]]@counts)
+cellbarcodeUMI <- colnames(seurat_object_Zheng_fil[["RNA"]]@counts)
+```
+
+```{python scrublet 1}
+import scrublet as scr
+import scipy.io
+import matplotlib.pyplot as plt
+import numpy as np
+import os #なければconda install で入れておく
+plt.rcParams['font.family'] = 'sans-serif'
+plt.rcParams['font.sans-serif'] = 'Arial'
+plt.rc('font', size=14)
+plt.rcParams['pdf.fonttype'] = 42
+
+counts_matrix = r.UMImatrix.T.tocsc() #RオブジェクトのUMIマトリックスを転置行列し、列の取得に適したCSCという疎行列に変換。現時点で、col:gene symbol,row barcodeのはず
+genes = r.genesymbolUMI
+print('Counts matrix shape: {} rows, {} columns'.format(counts_matrix.shape[0], counts_matrix.shape[1]))
+print('Number of genes in gene list: {}'.format(len(genes)))#genesymbolがmatrixのcolumn数と一致していることを確認
+
+scrub = scr.Scrublet(counts_matrix, expected_doublet_rate=0.048)#細胞数によって変える。10x chemystoryのマニュアル参照
+#https://kb.10xgenomics.com/hc/en-us/articles/360001378811-What-is-the-maximum-number-of-cells-that-can-be-profiled-
+#input ~9000 cells, recovered ~5000cells -> 4.0%
+#input ~1650 cells, recovered ~1000cells -> 0.8%
+#input ~825 cells, recovered ~500cells -> 0.4%
+
+doublet_scores, predicted_doublets = scrub.scrub_doublets(min_counts=2, 
+                                                          min_cells=3, 
+                                                          min_gene_variability_pctl=85, 
+                                                          n_prin_comps=30)#これがデフォ
+
+                                                          
+scrub.plot_histogram();#jupyterなら出るのにRだと出ないのだわ。
+plt.show()#jupyterと異なり、RMDではこのコードを書かないとplotを出してくれない！
+```
+
+```{python scrublet 3 UMAP}
+print('Running UMAP...')
+scrub.set_embedding('UMAP', scr.get_umap(scrub.manifold_obs_, 10, min_dist=0.3))
+
+# # Uncomment to run tSNE - slow
+# print('Running tSNE...')
+# scrub.set_embedding('tSNE', scr.get_tsne(scrub.manifold_obs_, angle=0.9))
+
+# # Uncomment to run force layout - slow
+# print('Running ForceAtlas2...')
+# scrub.set_embedding('FA', scr.get_force_layout(scrub.manifold_obs_, n_neighbors=5. n_iter=1000))
+    
+print('Done.')
+scrub.plot_embedding('UMAP', order_points=True);
+
+# scrub.plot_embedding('tSNE', order_points=True);
+# scrub.plot_embedding('FA', order_points=True);
+plt.show()
+#Rでは今後の作業をpythonでやるよりRでやったほうが早いため、一回Rに投げる
+#output_dir = "C:/10xdata/202106_Sasaki_Cy_gonad/cr60mf5v4a_a10k/E24MS140" + "/scrublet_output/"
+#with open (datadir + "/D8.csv" , "w") as f :
+#    writer=csv.writer(f)
+#    writer.writerow(predicted_doublets)
+#with open (datadir + "/D8_score.csv" , "w") as f :
+#    writer=csv.writer(f)
+#    writer.writerow(doublet_scores) 
+exit
+```
+
+```{r scrublet4 multiplet_removal_from_matrix}
+rownames(py$predicted_doublets) <- cellbarcodeUMI
+seurat_object_Zheng_fil <- AddMetaData(seurat_object_Zheng_fil,py$predicted_doublets,"Is_doublets")
+seurat_object_Zheng_fil <- subset(seurat_object_Zheng_fil, subset = Is_doublets == "FALSE")#Metadataみるとなぜか大文字
+ncol(seurat_object_Zheng_fil)#5735, from 5910
+```
+
+```{r RECODE count for scrublet}
+UMImatrix <- seurat_object_Zheng_fil[["RECODE"]]@counts
+genesymbolUMI <- rownames(seurat_object_Zheng_fil[["RECODE"]]@counts)
+cellbarcodeUMI <- colnames(seurat_object_Zheng_fil[["RECODE"]]@counts)
+```
+
+```{python scrublet 1}
+import scrublet as scr
+import scipy.io
+import matplotlib.pyplot as plt
+import numpy as np
+import os #なければconda install で入れておく
+plt.rcParams['font.family'] = 'sans-serif'
+plt.rcParams['font.sans-serif'] = 'Arial'
+plt.rc('font', size=14)
+plt.rcParams['pdf.fonttype'] = 42
+
+counts_matrix = r.UMImatrix.T.tocsc() #RオブジェクトのUMIマトリックスを転置行列し、列の取得に適したCSCという疎行列に変換。現時点で、col:gene symbol,row barcodeのはず
+genes = r.genesymbolUMI
+print('Counts matrix shape: {} rows, {} columns'.format(counts_matrix.shape[0], counts_matrix.shape[1]))
+print('Number of genes in gene list: {}'.format(len(genes)))#genesymbolがmatrixのcolumn数と一致していることを確認
+
+scrub = scr.Scrublet(counts_matrix, expected_doublet_rate=0.048)#細胞数によって変える。10x chemystoryのマニュアル参照
+#https://kb.10xgenomics.com/hc/en-us/articles/360001378811-What-is-the-maximum-number-of-cells-that-can-be-profiled-
+#input ~9000 cells, recovered ~5000cells -> 4.0%
+#input ~1650 cells, recovered ~1000cells -> 0.8%
+#input ~825 cells, recovered ~500cells -> 0.4%
+
+doublet_scores, predicted_doublets = scrub.scrub_doublets(min_counts=2, 
+                                                          min_cells=3, 
+                                                          min_gene_variability_pctl=85, 
+                                                          n_prin_comps=30)#これがデフォ
+
+                                                          
+scrub.plot_histogram();#jupyterなら出るのにRだと出ないのだわ。
+plt.show()
+```
+
+```{python}
+print('Running UMAP...')
+scrub.set_embedding('UMAP', scr.get_umap(scrub.manifold_obs_, 10, min_dist=0.3))
+print('Done.')
+
+scrub.plot_embedding('UMAP', order_points=True);
+plt.show()
+
+exit
+```
+
+```{r}
+rownames(py$predicted_doublets) <- cellbarcodeUMI
+seurat_object_Zheng_fil <- AddMetaData(seurat_object_Zheng_fil,py$predicted_doublets,"Is_doublets_REC")
+seurat_object_Zheng_fil <- subset(seurat_object_Zheng_fil, subset = Is_doublets_REC == "FALSE")#Metadataみるとなぜか大文字
+ncol(seurat_object_Zheng_fil)#5758, from 5910
+```
+scrubletはRNAでもRECODEでもcallされるダブレットの数におおきな差はなさそう。(singlet: RNA -> 5735, RECODE -> 5758, filter前データ5910)
+RECODEでscrubletをかけたもので解析を進める
+```{r data normalization}
+DefaultAssay(seurat_object_Zheng_fil) <- "RECODE"
+setwd("./Zheng2019_QC")
+set.seed(0)
+seurat_object_Zheng_fil <- NormalizeData(seurat_object_Zheng_fil, normalization.method = "LogNormalize", scale.factor = 100000)#10kでなく100k normalize RECODEはこれでも耐える
+seurat_object_Zheng_fil  <- FindVariableFeatures(seurat_object_Zheng_fil, selection.method = "vst", nfeatures = 2000)
+top10 <- head(VariableFeatures(seurat_object_Zheng_fil), 10)
+options(repr.plot.width = 12, repr.plot.height = 5)
+plot1 <- VariableFeaturePlot(seurat_object_Zheng_fil)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+png("seurat_object_Zheng_fil_combiplot_100knorm.png", width = 1000)
+CombinePlots(plots = list(plot1, plot2))
+dev.off()
+all.genes <- rownames(seurat_object_Zheng_fil)
+seurat_object_Zheng_fil <- ScaleData(seurat_object_Zheng_fil, features = all.genes)
+seurat_object_Zheng_fil <- RunPCA(seurat_object_Zheng_fil, features = VariableFeatures(object = seurat_object_Zheng_fil))
+p1 <- DimPlot(seurat_object_Zheng_fil, reduction = "pca", label = TRUE)
+p2 <- DimPlot(seurat_object_Zheng_fil, reduction = "pca", label = TRUE, split.by ="orig.ident")
+png("seurat_object_Zheng_fil_PCA_100knorm.png", width = 1000)
+p1+p2
+dev.off()
+png("seurat_object_Zheng_fil_elbow_100knorm.png")
+ElbowPlot(seurat_object_Zheng_fil, ndims = 50)
+dev.off()
+print(timestamp())##------ Mon Jan 23 11:14:59 2023 ------##
+
+seurat_object_Zheng_fil <- FindNeighbors(seurat_object_Zheng_fil, dims = 1:10)#difined by Elbow plot
+
+seurat_object_Zheng_fil <- FindClusters(seurat_object_Zheng_fil, resolution = 0.4)#typically 0.4~1.2 for 3K cells
+seurat_object_Zheng_fil <- RunUMAP(seurat_object_Zheng_fil, dims = 1:10)
+DimPlot(seurat_object_Zheng_fil, reduction = "umap")
+
+Zheng2019_m  <- c("TFAP2C","SOX17","PRDM1",
+                  "IGFBP3","TCIM",
+                  "MESP1","GATA6","SNAI2")
+p <- DotPlot(seurat_object_Zheng_fil, features = Zheng2019_m)+RotatedAxis()+
+  scale_color_viridis_c()+
+  theme(axis.title = element_blank(),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        legend.position = "left",
+        legend.text = element_text(size = 8),
+        legend.title = element_text(size = 10),
+        plot.margin = margin(0,0,0,0,unit = "cm"))
+ggsave(paste0(Sys.Date(),"_DP_Zheng2019_m_dim10reso04.tiff"),p,dpi = 300,height = 2.5, width = 4)
+
+new.cluster.ids <- c("cluster_4", #0
+                     "cluster_1", #1
+                     "cluster_5", #2 
+                     "cluster_6", #3
+                     "cluster_2", #4 
+                     "cluster_3", #5
+                     "cluster_7" #6
+)
+new.cluster.ids <- factor(new.cluster.ids, levels = c("cluster_1","cluster_2","cluster_3","cluster_4","cluster_5","cluster_6","cluster_7"))
+seurat_object_Zheng_fil <- RenameIdents(seurat_object_Zheng_fil, "0" = new.cluster.ids[1],"1" = new.cluster.ids[2],"2" = new.cluster.ids[3],"3" = new.cluster.ids[4],"4" = new.cluster.ids[5],"5" = new.cluster.ids[6],"6" = new.cluster.ids[7])
+
+p <- DotPlot(seurat_object_Zheng_fil, features = Zheng2019_m)+RotatedAxis()+
+  scale_color_viridis_c()+
+  theme(axis.title = element_blank(),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        legend.position = "left",
+        legend.text = element_text(size = 8),
+        legend.title = element_text(size = 10),
+        plot.margin = margin(0,0,0,0,unit = "cm"))
+ggsave(paste0(Sys.Date(),"_DP_Zheng2019_m_dim10reso04.pdf"),p,dpi = 300,height = 2.5, width = 4)
+
+FeaturePlot(seurat_object_Zheng_fil, features = c("TOP2A", "CCNA2"))
+
+seurat_object_Zheng_anno <- seurat_object_Zheng_fil
+seurat_object_Zheng_anno <- RenameIdents(seurat_object_Zheng_anno,
+                                        "cluster_1" = "Zheng_PGCLC",
+                                        "cluster_2" = "Zheng_AMLC1",
+                                        "cluster_3" = "Zheng_AMLC2",
+                                        "cluster_4" = "Zheng_MeLC1",
+                                        "cluster_5" = "Zheng_MeLC2",
+                                        "cluster_6" = "Zheng_MeLC3",
+                                        "cluster_7" = "Zheng_MeLC4")
+DimPlot(seurat_object_Zheng_anno, reduction = "umap")
+
+saveRDS(seurat_object_Zheng_anno, "seurat_object_Zheng_anno.rds")
+
+piyo <- SeuratObj_Zheng
+piyo <- RenameIdents(piyo,
+                     "Zheng_PGCLC" = "cluster_1",
+                     "Zheng_AMLC1" = "cluster_2",
+                     "Zheng_AMLC2" = "cluster_3",
+                     "Zheng_MeLC1" = "cluster_4",
+                     "Zheng_MeLC2" = "cluster_5",
+                     "Zheng_MeLC3" = "cluster_6",
+                     "Zheng_MeLC4" = "cluster_7")
+ggsave(paste0(Sys.Date(),"_DimP_Zheng2019_m_dim10reso04.tiff"),DimPlot(piyo, reduction = "umap", label = T, pt.size = 1, label.size = 6)+NoLegend()+theme(text = element_text(family = "Arial")) ,device = cairo_pdf(),dpi = 300,height = 5, width = 5)
+```
+
+
+```{r}
+saveRDS(seurat_object_Zheng_fil, "seurat_object_Zheng_fil.rds")
+piyo <- readRDS("seurat_object_Zheng_fil.rds")
+SaveH5Seurat(seurat_object_Zheng_fil, filename = "seurat_object_Zheng_fil.h5Seurat")
+
+
+```

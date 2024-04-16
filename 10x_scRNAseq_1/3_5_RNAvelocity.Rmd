@@ -1,0 +1,66 @@
+---
+title: '3_5_RNAvelocity'
+author: "Ryuta Yokogawa"
+output:
+  html_document:
+    number_sections: yes
+    toc: true
+    toc_float: true
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "~/Library/CloudStorage/OneDrive-KyotoUniversity/10xanalysis/RMD for analysis/Murase_paper/Final")
+```
+
+data: 
+
+Hs_in-vivo (wk7, wk9, wk10, wk11, wk13, wk16)
+Hs_in-vitro (c11, c56, c86, c117)
+
+# Set up
+```{r}
+filename<-"3_5_RNAvelocity"
+orig.ident<-c("AC7w","AC9w","AC10w","YK11w","AC13w","AC16w","c11","c56","c86","c117")
+dataset<-c(rep("Hs_in-vivo",6), rep("Hs_in-vitro",4))
+mapping<-"cr601_GRCh38p12chrxmv2_20221222"
+```
+
+#load libraries
+```{r , warning=FALSE , message=FALSE}
+library(reticulate)
+library(SeuratDisk)
+library(tidyverse)
+```
+
+#解析環境
+```{r}
+ sessionInfo() 
+```
+
+#conda環境の読み込み
+```{r}
+use_condaenv(condaenv = "scvelo", required = TRUE) 
+```
+
+```{python}
+filename="3_5_RNAvelocity"
+inpath="/Users/ry/Library/CloudStorage/OneDrive-KyotoUniversity/10xanalysis/RMD for analysis/Murase_paper/Final"
+import scvelo as scv
+import scanpy as sc
+import numpy as np
+from matplotlib.backends.backend_pdf import PdfPages
+```
+
+```{python}
+VIVO = sc.read(inpath+"/3_3_RNAvelocity_VIVO_stochastic.h5ad")
+VITRO = sc.read(inpath+"/3_3_RNAvelocity_VITRO_stochastic.h5ad")
+
+UMAP=np.vstack([VIVO.obsm["X_umap"],VITRO.obsm["X_umap"]])
+max=np.amax(UMAP,axis=0)
+min=np.amin(UMAP,axis=0)
+scv.pl.velocity_embedding_stream(VIVO, basis="umap", color="cluster",save=filename+'_VIVO_stochastic.png',legend_loc="none",figsize=(8,8),xlim=[min[0]*1.1,max[0]*1.1],ylim=[min[1]*1.1,max[1]*1.1], dpi=1200)
+
+scv.pl.velocity_embedding_stream(VITRO, basis="umap", color="cluster",save=filename+'_VITRO_stochastic.png',legend_loc="none",figsize=(8,8),xlim=[min[0]*1.1,max[0]*1.1],ylim=[min[1]*1.1,max[1]*1.1],dpi=1200)
+```
+
