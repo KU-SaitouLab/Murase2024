@@ -1,4 +1,5 @@
-# Codes used in Murase. et.al. XXXX, XXXX, XXXX.
+# Codes used in 
+Murase, Y. et al. In vitro reconstitution of epigenetic reprogramming in the human germ line. Nature (2024) doi:10.1038/s41586-024-07526-6.
 ## 1. Haplotye phasing workflow v1.0
 ### Murase2024/hap_phasing/
 Shell scripts
